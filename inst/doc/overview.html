@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+
+
+<title>Overview of cogmod</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">Overview of cogmod</h1>
+
+
+
+<p><strong>cogmod</strong> provides cognitive models for two broad
+families of behavioural data: subjective ratings collected on Likert or
+analog scales, and decision making tasks that yield reaction times and
+choices.</p>
+<p>Each model comes in two halves. The first is a set of plain R
+functions - <code>r*()</code> to simulate, <code>d*()</code> for the
+density, useful on their own for simulation, predictions, visualization,
+and teaching.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">library</span>(cogmod)</span>
+<span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">3</span>)</span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a>x <span class="ot">&lt;-</span> <span class="fu">rcogmod_betagate</span>(<span class="dv">5000</span>, <span class="at">mu =</span> <span class="fl">0.6</span>, <span class="at">phi =</span> <span class="dv">4</span>, <span class="at">pex =</span> <span class="fl">0.15</span>, <span class="at">bex =</span> <span class="fl">0.4</span>)</span>
+<span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a><span class="fu">hist</span>(x, <span class="at">breaks =</span> <span class="dv">50</span>, <span class="at">col =</span> <span class="st">&quot;#2196F3&quot;</span>, <span class="at">border =</span> <span class="cn">NA</span>,</span>
+<span id="cb1-6"><a href="#cb1-6" tabindex="-1"></a>     <span class="at">main =</span> <span class="st">&quot;Beta-Gate ratings&quot;</span>, <span class="at">xlab =</span> <span class="st">&quot;Rating&quot;</span>)</span></code></pre></div>
+<p><img role="img" src="data:image/png;base64,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" /><!-- --></p>
+<p>The second half is the machinery needed to <em>fit</em> the model as
+a custom response distribution in <a href="https://paulbuerkner.com/brms/"><strong>brms</strong></a>: a
+family constructor, the Stan code implementing its log-density, and the
+<code>log_lik</code>/<code>posterior_predict</code>/<code>posterior_epred</code>
+methods that make <code>loo</code>, <code>pp_check()</code> and the
+<strong>easystats</strong> post-processing functions work as they
+normally would. Fitting requires a Stan backend (<a href="https://mc-stan.org/cmdstanr/"><strong>cmdstanr</strong></a> is
+recommended).</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a><span class="fu">library</span>(brms)</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a></span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>f <span class="ot">&lt;-</span> <span class="fu">bf</span>(rating <span class="sc">~</span> condition <span class="sc">+</span> (<span class="dv">1</span> <span class="sc">|</span> participant), phi <span class="sc">~</span> <span class="dv">1</span>, pex <span class="sc">~</span> <span class="dv">1</span>, bex <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a>        <span class="at">family =</span> <span class="fu">cogmod_betagate</span>())</span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a></span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a>m <span class="ot">&lt;-</span> <span class="fu">brm</span>(</span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a>  f,</span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a>  <span class="at">data =</span> df,</span>
+<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a>  <span class="at">stanvars =</span> <span class="fu">cogmod_stanvars</span>(f),</span>
+<span id="cb2-10"><a href="#cb2-10" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&quot;cmdstanr&quot;</span></span>
+<span id="cb2-11"><a href="#cb2-11" tabindex="-1"></a>)</span></code></pre></div>
+<p>The pattern is the same for every model: name the family in
+<code>bf()</code>, then let <code>cogmod_stanvars()</code> supply the
+Stan code that goes with it. Two companions follow the same shape -
+<code>cogmod_priors(f, df)</code> for the priors <code>brms</code> would
+otherwise leave flat, and <code>cogmod_inits(f, df)</code> for starting
+values on the families whose default start is a bad one.</p>
+<div id="where-to-go-next" class="section level2">
+<h2>Where to go next</h2>
+<p>The <a href="https://dominiquemakowski.github.io/cogmod/reference/index.html">function
+reference</a> lists every model with its parameterisation. Worked,
+end-to-end analyses live on the package website, where they can be built
+with fitted models that would be too slow to include here:</p>
+<ul>
+<li><a href="https://dominiquemakowski.github.io/cogmod/articles/subjective_ratings.html">Subjective
+Ratings</a> - Beta-Gate and CHOCO on rating data, compared against ZOIB
+and ordinal alternatives.</li>
+<li><a href="https://dominiquemakowski.github.io/cogmod/articles/rt_models.html">How
+to Properly Analyze Reaction Times Data</a> - why linear models on mean
+RT mislead, and how the RT-only families compare.</li>
+<li><a href="https://dominiquemakowski.github.io/cogmod/articles/decision_making.html">Decision
+Making Models</a> - fitting and comparing DDM, LBA, RDM and LNR on
+choice-RT data.</li>
+<li><a href="https://dominiquemakowski.github.io/cogmod/articles/reliability.html">Assessing
+Reliability</a> - interindividual variability and reliability of model
+parameters.</li>
+</ul>
+</div>
+<div id="citation" class="section level2">
+<h2>Citation</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a><span class="fu">citation</span>(<span class="st">&quot;cogmod&quot;</span>)</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a><span class="co">#&gt; To cite cogmod in publications use:</span></span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="co">#&gt;   Makowski, D. (2026). cogmod: Cognitive Models for Subjective Scales</span></span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co">#&gt;   and Decision Making Tasks. R package version 0.3.0.</span></span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt;   https://github.com/DominiqueMakowski/cogmod</span></span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt; A BibTeX entry for LaTeX users is</span></span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co">#&gt;   @Manual{makowski2026cogmod,</span></span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="co">#&gt;     title = {{cogmod}: Cognitive Models for Subjective Scales and Decision Making Tasks},</span></span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a><span class="co">#&gt;     author = {Dominique Makowski},</span></span>
+<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a><span class="co">#&gt;     year = {2026},</span></span>
+<span id="cb3-14"><a href="#cb3-14" tabindex="-1"></a><span class="co">#&gt;     note = {R package version 0.3.0},</span></span>
+<span id="cb3-15"><a href="#cb3-15" tabindex="-1"></a><span class="co">#&gt;     url = {https://github.com/DominiqueMakowski/cogmod},</span></span>
+<span id="cb3-16"><a href="#cb3-16" tabindex="-1"></a><span class="co">#&gt;   }</span></span></code></pre></div>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>
