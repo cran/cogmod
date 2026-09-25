@@ -182,27 +182,57 @@ family). Nothing about it is taken from the data: it is not bounded by the
 fastest observed response, so a non-decision time that varies by condition or
 by participant can exceed the sample minimum wherever the data support it.
 
-This replaces the earlier \code{tau} / \code{minrt} pair, in which \code{ndt = tau * minrt}
-with \code{minrt} set to the fastest observed RT. That capped the non-decision
-time at an order statistic of the sample, so any condition or participant
-whose true \code{ndt} exceeded the fastest observed response was inexpressible,
-and the misfit surfaced as spurious effects on the race parameters.
+Tying \code{ndt} to the fastest observed response would cap it at an order
+statistic of the sample, so any condition or participant whose true \code{ndt}
+exceeded that response would be inexpressible, and the misfit would surface
+as spurious effects on the race parameters. Expressing it directly is what
+avoids that.
 }
 
 \section{Negative drift rates}{
-A normal drift rate can come out negative, and such an accumulator rises
-away from the threshold and never responds. A trial on which \emph{both} drifts
-are negative produces no response at all, so it is not a trial: the process
-is conditioned on at least one of the two being positive, and
-\code{rcogmod_lba2()} draws from exactly that conditional distribution.
+A Normal drift rate can come out negative, and such an accumulator rises
+away from the threshold and never responds. Brown and Heathcote (2008) noted
+the problem and left it; every implementation since has had to decide what
+to do about it, and this one follows the convention of \code{rtdists}
+(\code{posdrift = TRUE}, its default), \code{DMC}, \code{EMC2} and \code{ggdmc}: \strong{each drift
+rate is a Normal truncated at zero}. Every accumulator is then guaranteed a
+positive rate on every trial, every trial produces a response, and the
+losing accumulator's survival is that of a truncated Normal.
+\code{rcogmod_lba2()} draws each drift from exactly that truncated distribution.
 
-The density is conditioned to match, dividing by
-\code{1 - pnorm(-driftzero / sigmazero) * pnorm(-driftone / sigmaone)}. Without
-that factor the density integrates to the probability of the event rather
-than to one, which at low drift rates is a long way short - \code{0.83} at drifts
-of \code{0.5} and \code{0.2} with SDs of \code{1.5}, so the likelihood is wrong by 17\% and
-wrong by \emph{different} amounts at different parameter values, which is what
-makes it bias estimates rather than merely offset them.
+The density is normalised to match: the winner's defective density is
+divided by its own \code{pnorm(drift / sigma)}, and the loser's survival is taken
+conditional on its own drift being positive. Without the truncation the
+density integrates to the probability that at least one accumulator finishes
+rather than to one, which at low drift rates is a long way short - \code{0.83}
+at drifts of \code{0.5} and \code{0.2} with SDs of \code{1.5}, so the likelihood would be
+wrong by 17\% and wrong by \emph{different} amounts at different parameter values,
+which is what biases estimates rather than merely offsetting them.
+
+Two consequences are worth knowing. First, because the convention is the
+field's, parameter estimates are \strong{directly comparable} with those packages'
+and with the published LBA literature built on them, and \code{\link[=dcogmod_lba2]{dcogmod_lba2()}}
+reproduces \code{rtdists::dLBA()} at the same parameter values. Second, \code{drift}
+and \code{sigma} are the location and scale of the \emph{untruncated} Normal, not the
+mean and SD of the drifts actually realised: where a drift is small relative
+to its SD, the realised mean is higher and the realised SD lower than the
+parameters say. That is the price every implementation pays for a race that
+always finishes; with both drifts large relative to their SDs it is
+negligible.
+
+The truncation also creates a flat direction. A Normal truncated at zero
+whose location runs off to minus infinity while its scale grows, with
+\verb{|drift| / sigma^2} held fixed, converges to an Exponential, so once an
+accumulator rarely wins its \code{drift} and \code{sigma} are identified only through
+that ratio, and the likelihood is nearly flat along the ray. The error
+accumulator in a task with a 5\% error rate is exactly such a case: left
+flat, its drift wandered to \code{-12} with an interval of \code{-23} to \code{-6.5}, on an
+evidence scale where the correct accumulator's drift is \code{3}.
+\code{\link[=cogmod_priors]{cogmod_priors()}} therefore puts \code{normal(1, 2)} on \code{driftone} and
+\code{normal(0, 1.5)} on its slopes, as it does for \code{\link[=cogmod_lnr]{cogmod_lnr()}}'s \code{nuone}. If
+the \emph{rarely} chosen option is the one on \code{mu}, mirror that prior onto \code{mu}
+by hand. Fixing both SDs (\verb{sigmazero = 1, sigmaone = 1}, a single \code{sv})
+removes the ray altogether and is common practice in the LBA literature.
 }
 
 \section{The evidence scale is arbitrary}{
@@ -255,8 +285,7 @@ individual trials, it estimates what share of them came from elsewhere. Use
 \section{Reaction times must be in seconds}{
 The outlier component's scale is a constant in seconds, and so are the
 priors \code{\link[=cogmod_priors]{cogmod_priors()}} supplies. There is no argument for changing the
-unit: the \code{minrt} argument that used to rescale the component was removed in
-0.2.1. Millisecond data fails silently rather than loudly - the outlier
+unit. Millisecond data fails silently rather than loudly - the outlier
 component contributes nothing and the min-RT boundary comes back. See the
 corresponding section of \code{\link[=cogmod_lognormal]{cogmod_lognormal()}} for the full account, which
 applies unchanged here.
@@ -304,17 +333,17 @@ head(data)
 dcogmod_lba2(0.1, ndt = 0.2, response = 0, poutlier = 0.02)
 dcogmod_lba2(0.1, ndt = 0.2, response = 0, poutlier = 0)
 
-\donttest{
-# Exposing the Stan function needs cmdstanr and a CmdStan toolchain,
-# which live outside CRAN - see the package website to install them.
-if (requireNamespace("cmdstanr", quietly = TRUE) &&
-    !is.null(cmdstanr::cmdstan_version(error_on_NA = FALSE))) {
-  lpdf <- cogmod_lba2_lpdf_expose()
-  lpdf(
-    Y = 0.5, mu = 3, driftone = 2, sigmazero = 1, sigmaone = 1,
-    sigmabias = 0.5, boundary = 0.5, ndt = 0.2, poutlier = 0.02, dec = 0
-  )
-}
+\dontrun{
+# Needs cmdstanr and a CmdStan toolchain, which live outside CRAN - see the
+# package website to install them. Not run under R CMD check, which executes
+# every example in one R session: once brms has fitted a model there (the
+# cogmod_inits() and p_outlier() examples do), rstan is live in the process
+# and loading an exposed Stan function next to it segfaults on Linux.
+lpdf <- cogmod_lba2_lpdf_expose()
+lpdf(
+  Y = 0.5, mu = 3, driftone = 2, sigmazero = 1, sigmaone = 1,
+  sigmabias = 0.5, boundary = 0.5, ndt = 0.2, poutlier = 0.02, dec = 0
+)
 }
 
 }

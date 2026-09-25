@@ -10,6 +10,7 @@
 #' Functions:
 #' - `rcogmod_logstudent()`: Simulates random draws.
 #' - `dcogmod_logstudent()`: Computes the density (likelihood).
+#' - `pcogmod_logstudent()`: Computes the cumulative distribution function (CDF) or survival.
 #' - `cogmod_logstudent()`: Creates a `brms::custom_family()`.
 #' - `cogmod_logstudent_stanvars()`: Generates the `stanvars` to pass to `brm()`.
 #'
@@ -17,7 +18,10 @@
 #' `log(RT - ndt)` follows a **Student-t** distribution with location `mu`,
 #' scale `sigma` and `dof` degrees of freedom. As `dof` grows the Student-t
 #' becomes the Normal, so [cogmod_lognormal()] is the `dof -> Inf` limit: this
-#' family varies **kurtosis** where [cogmod_loggamma()] varies skew.
+#' family varies **kurtosis** where [cogmod_loggamma()] varies skew. It has no
+#' `sigmabias`: the start-point range of [cogmod_lognormal()] needs a partial
+#' first moment of the rate distribution, and `exp()` of a Student-t has no
+#' moments at all.
 #'
 #' `dof` is what `brms::student()` calls `nu`. It is renamed here because
 #' [cogmod_lnr()] already spends `nuzero` and `nuone` on drift rates, and
@@ -127,6 +131,16 @@ dcogmod_logstudent <- function(x, mu = -0.7, sigma = 0.4, dof = 5, ndt = 0.2,
                                poutlier = 0, log = FALSE) {
   .dshifted("cogmod_logstudent", x = x, ndt = ndt, poutlier = poutlier,
             log = log, mu = mu, sigma = sigma, dof = dof)
+}
+
+
+#' @rdname rcogmod_logstudent
+#' @export
+pcogmod_logstudent <- function(q, mu = -0.7, sigma = 0.4, dof = 5, ndt = 0.2,
+                               poutlier = 0, lower.tail = TRUE, log.p = FALSE) {
+  .pshifted("cogmod_logstudent", q = q, ndt = ndt, poutlier = poutlier,
+            lower.tail = lower.tail, log.p = log.p, mu = mu, sigma = sigma,
+            dof = dof)
 }
 
 

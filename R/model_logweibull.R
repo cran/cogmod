@@ -9,6 +9,7 @@
 #' Functions:
 #' - `rcogmod_logweibull()`: Simulates random draws.
 #' - `dcogmod_logweibull()`: Computes the density (likelihood).
+#' - `pcogmod_logweibull()`: Computes the cumulative distribution function (CDF) or survival.
 #' - `cogmod_logweibull()`: Creates a `brms::custom_family()`.
 #' - `cogmod_logweibull_stanvars()`: Generates the `stanvars` to pass to `brm()`.
 #'
@@ -21,7 +22,7 @@
 #' and [with_outliers()], [without_outliers()], [p_outlier()] and
 #' [cogmod_priors()] all work here too. See `?rcogmod_lognormal` for why `ndt` is
 #' expressed directly in seconds rather than as a fraction of the fastest
-#' observed response, what the half Student-t outlier component is for, and why
+#' observed response, what the half Normal outlier component is for, and why
 #' the outlier component's scale is a constant rather than a `dpar`, and why
 #' reaction times have to be in seconds.
 #'
@@ -75,6 +76,15 @@ dcogmod_logweibull <- function(x, mu = -0.8, sigma = 0.3, ndt = 0.2, poutlier = 
                       log = FALSE) {
   .dshifted("cogmod_logweibull", x = x, ndt = ndt, poutlier = poutlier,
                log = log, mu = mu, sigma = sigma)
+}
+
+
+#' @rdname rcogmod_logweibull
+#' @export
+pcogmod_logweibull <- function(q, mu = -0.8, sigma = 0.3, ndt = 0.2, poutlier = 0,
+                               lower.tail = TRUE, log.p = FALSE) {
+  .pshifted("cogmod_logweibull", q = q, ndt = ndt, poutlier = poutlier,
+            lower.tail = lower.tail, log.p = log.p, mu = mu, sigma = sigma)
 }
 
 

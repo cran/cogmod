@@ -7,6 +7,7 @@ make_prep <- function(y, mu, sigma, ndt, poutlier, n_draws = 10) {
       dpars = list(
         mu = rep(mu, n_draws),
         sigma = rep(sigma, n_draws),
+        sigmabias = rep(0, n_draws),
         ndt = rep(ndt, n_draws),
         poutlier = rep(poutlier, n_draws)
       )
@@ -33,13 +34,13 @@ test_that("dcogmod_lognormal matches the mixture density", {
 
   for (y in c(0.05, 0.31, 0.5, 0.9, 1.5, 3)) {
     expect_equal(
-      dcogmod_lognormal(y, mu, sigma, ndt, poutlier),
+      dcogmod_lognormal(y, mu, sigma, ndt, poutlier = poutlier),
       ref_dens(y, mu, sigma, ndt, poutlier),
       tolerance = 1e-12,
       label = sprintf("density at y = %.2f", y)
     )
     expect_equal(
-      dcogmod_lognormal(y, mu, sigma, ndt, poutlier, log = TRUE),
+      dcogmod_lognormal(y, mu, sigma, ndt, poutlier = poutlier, log = TRUE),
       log(ref_dens(y, mu, sigma, ndt, poutlier)),
       tolerance = 1e-12,
       label = sprintf("log-density at y = %.2f", y)
@@ -104,7 +105,7 @@ test_that("rcogmod_lognormal recovers the mixture mean", {
   ndt <- 0.3
   poutlier <- 0.05
 
-  rts <- rcogmod_lognormal(2e4, mu, sigma, ndt, poutlier)
+  rts <- rcogmod_lognormal(2e4, mu, sigma, ndt, poutlier = poutlier)
   theo <- (1 - poutlier) * (exp(mu + sigma^2 / 2) + ndt) +
     poutlier * (0.2 * sqrt(2 / pi))
 
@@ -148,6 +149,7 @@ test_that("log_lik_cogmod_lognormal returns -Inf for invalid parameters", {
       dpars = list(
         mu = c(-0.7, -0.7, -0.7),
         sigma = c(-0.5, 0.5, 0.5),
+        sigmabias = c(0, 0, 0),
         ndt = c(0.3, -0.3, 0.3),
         poutlier = c(0.02, 0.02, 1.5)
       )
@@ -168,6 +170,7 @@ test_that("posterior_predict_cogmod_lognormal excludes outliers by default", {
   prep <- structure(
     list(dpars = list(
       mu = rep(mu, n_draws), sigma = rep(sigma, n_draws),
+      sigmabias = rep(0, n_draws),
       ndt = rep(ndt, n_draws), poutlier = rep(poutlier, n_draws)
     )),
     class = "brmsprep"
@@ -195,7 +198,8 @@ test_that("posterior_epred_cogmod_lognormal excludes outliers by default", {
   poutlier <- matrix(0.02, nrow = 2, ncol = 2)
 
   prep <- structure(
-    list(dpars = list(mu = mu, sigma = sigma, ndt = ndt, poutlier = poutlier)),
+    list(dpars = list(mu = mu, sigma = sigma, sigmabias = 0 * mu, ndt = ndt,
+                      poutlier = poutlier)),
     class = "brmsprep"
   )
 
@@ -228,6 +232,7 @@ test_that("the family flag drives predictions when no argument is given", {
 
   dpars <- list(
     mu = rep(mu, n_draws), sigma = rep(sigma, n_draws),
+    sigmabias = rep(0, n_draws),
     ndt = rep(ndt, n_draws), poutlier = rep(poutlier, n_draws)
   )
   on <- structure(
@@ -314,6 +319,7 @@ test_that("p_outlier returns the mixture responsibility", {
     data = list(Y = y),
     dpars = list(
       mu = matrix(-0.9, nd, length(y)), sigma = matrix(0.5, nd, length(y)),
+      sigmabias = matrix(0, nd, length(y)),
       ndt = matrix(0.25, nd, length(y)), poutlier = matrix(0.02, nd, length(y))
     )
   )
@@ -359,6 +365,7 @@ test_that("p_outlier stays finite where the natural-scale ratio would be 0/0", {
     dpars = list(
       mu = matrix(-0.9, nd, length(y)),
       sigma = matrix(0.05, nd, length(y)), # tight enough to underflow dlnorm
+      sigmabias = matrix(0, nd, length(y)),
       ndt = matrix(0.25, nd, length(y)),
       poutlier = matrix(1e-8, nd, length(y)) # tiny rate, as in early warmup
     )
@@ -388,10 +395,11 @@ test_that("cogmod_lognormal() builds a valid brms custom family", {
   fam <- cogmod_lognormal()
 
   expect_s3_class(fam, "customfamily")
-  expect_identical(fam$dpars, c("mu", "sigma", "ndt", "poutlier"))
+  expect_identical(fam$dpars, c("mu", "sigma", "sigmabias", "ndt", "poutlier"))
   expect_identical(
-    unname(c(fam$link, fam$link_sigma, fam$link_ndt, fam$link_poutlier)),
-    c("identity", "softplus", "log", "logit")
+    unname(c(fam$link, fam$link_sigma, fam$link_sigmabias, fam$link_ndt,
+             fam$link_poutlier)),
+    c("identity", "softplus", "softplus", "log", "logit")
   )
   # the outlier scale is a package constant, never a dpar: brms would estimate it
   expect_false("minrt" %in% fam$dpars)
@@ -444,7 +452,7 @@ test_that("brms leaves the ndt and poutlier intercepts flat", {
 # The two locations cogmod_priors() sets are pinned here once. Every other
 # assertion about them is expressed relative to these, so changing a location in
 # the source leaves exactly one test to update rather than four.
-.NDT_INTERCEPT_PRIOR <- "normal(-1.2, 0.2)"
+.NDT_INTERCEPT_PRIOR <- "normal(-1.2, 0.5)"
 .SLOPE_PRIOR <- "normal(0, 0.2)"
 
 .normal_loc <- function(x) as.numeric(sub("^normal\\(([^,]+),.*$", "\\1", x))
@@ -536,7 +544,7 @@ test_that("returned priors compose and replace with c()", {
 
 test_that("the likelihood is flat in both directions a prior has to cover", {
   y <- rcogmod_lognormal(400, mu = -0.7, sigma = 0.5, ndt = 0.3, poutlier = 0.02)
-  ll <- function(nd, p) sum(dcogmod_lognormal(y, -0.7, 0.5, nd, p, log = TRUE))
+  ll <- function(nd, p) sum(dcogmod_lognormal(y, -0.7, 0.5, nd, poutlier = p, log = TRUE))
 
   # poutlier -> 1: the plateau is exactly flat in poutlier itself once it
   # saturates, which is the direction the prior has to cover.
@@ -574,12 +582,12 @@ test_that("omitting ndt/poutlier from bf() still yields proper priors", {
   expect_equal(raw$prior[raw$class == "poutlier"], "")
 
   p <- cogmod_priors(f, d)
-  expect_equal(p$prior[p$class == "ndt"], "lognormal(-1.2, 0.2)")
+  expect_equal(p$prior[p$class == "ndt"], "lognormal(-1.2, 0.5)")
   expect_equal(p$prior[p$class == "poutlier"], "exponential(100)")
 
   code <- brms::make_stancode(f, data = d, family = cogmod_lognormal(), prior = p,
                               stanvars = cogmod_lognormal_stanvars())
-  expect_true(grepl("lognormal_lpdf(ndt | -1.2, 0.2)", code, fixed = TRUE))
+  expect_true(grepl("lognormal_lpdf(ndt | -1.2, 0.5)", code, fixed = TRUE))
   expect_true(grepl("exponential_lpdf(poutlier | 100)", code, fixed = TRUE))
   expect_false(grepl("uniform_lpdf(ndt", code, fixed = TRUE))
 })
@@ -587,9 +595,9 @@ test_that("omitting ndt/poutlier from bf() still yields proper priors", {
 test_that("the natural-scale priors describe the same belief as the link ones", {
   # lognormal(m, s) on ndt is exactly normal(m, s) on log(ndt)
   set.seed(1)
-  x <- rlnorm(2e4, -1.2, 0.2)
+  x <- rlnorm(2e4, -1.2, 0.5)
   expect_equal(mean(log(x)), -1.2, tolerance = 0.01)
-  expect_equal(sd(log(x)), 0.2, tolerance = 0.02)
+  expect_equal(sd(log(x)), 0.5, tolerance = 0.02)
 
   # exponential(100) keeps the centre of logit-normal(-5, 1) but moves the mode
   # to zero: omitting poutlier from the formula says you expect no outliers.
@@ -600,4 +608,200 @@ test_that("the natural-scale priors describe the same belief as the link ones", 
   expect_lt(qexp(0.95, 100), 0.05)
   # essentially all of it lies inside the [0, 1] support, so truncation is moot
   expect_gt(pexp(1, 100), 1 - 1e-12)
+})
+
+
+# the start-point range ---------------------------------------------------
+
+# For a fixed distance D the decision time is D * exp(mu + sigma Z), i.e.
+# LogNormal(mu + log D, sigma), so the density, CDF and survival with a
+# start-point range are averages over D ~ Uniform(1, 1 + A) of the plain
+# lognormal functions. One-dimensional quadrature of those is the reference for
+# the closed-form kernels, series branches included.
+ref_acc <- function(t, mu, sigma, A, what = c("dens", "cdf", "surv")) {
+  what <- match.arg(what)
+  g <- switch(what,
+    dens = function(d) stats::dlnorm(t, mu + log(d), sigma),
+    cdf = function(d) stats::plnorm(t, mu + log(d), sigma),
+    surv = function(d) stats::plnorm(t, mu + log(d), sigma, lower.tail = FALSE)
+  )
+  stats::integrate(g, 1, 1 + A, rel.tol = 1e-11, abs.tol = 0,
+                   subdivisions = 500)$value / A
+}
+
+test_that("sigmabias = 0 is the plain shifted LogNormal, bit for bit", {
+  t <- c(0.05, 0.3, 1, 4)
+  expect_identical(cogmod:::.lognormal_acc_ldens(t, -0.7, 0.6, 0),
+                   stats::dlnorm(t, -0.7, 0.6, log = TRUE))
+  expect_identical(cogmod:::.lognormal_acc_lcdf(t, -0.7, 0.6, 0),
+                   stats::plnorm(t, -0.7, 0.6, log.p = TRUE))
+  expect_identical(cogmod:::.lognormal_acc_lccdf(t, -0.7, 0.6, 0),
+                   stats::plnorm(t, -0.7, 0.6, lower.tail = FALSE,
+                                 log.p = TRUE))
+  # the general kernel is continuous with it through the series branch
+  expect_equal(cogmod:::.lognormal_acc_ldens(t, -0.7, 0.6, 1e-9),
+               stats::dlnorm(t, -0.7, 0.6, log = TRUE), tolerance = 1e-8)
+  expect_equal(cogmod:::.lognormal_acc_lcdf(t, -0.7, 0.6, 1e-9),
+               stats::plnorm(t, -0.7, 0.6, log.p = TRUE), tolerance = 1e-8)
+  # the default argument is that zero, in all three user-facing functions
+  expect_identical(dcogmod_lognormal(0.5), dcogmod_lognormal(0.5, sigmabias = 0))
+  expect_identical(pcogmod_lognormal(0.5), pcogmod_lognormal(0.5, sigmabias = 0))
+  set.seed(5); a <- rcogmod_lognormal(20)
+  set.seed(5); b <- rcogmod_lognormal(20, sigmabias = 0)
+  expect_identical(a, b)
+})
+
+test_that("the start-point kernels agree with quadrature over the start point", {
+  grid <- covering_grid(
+    t = c(0.02, 0.1, 0.4, 1, 2.5, 8, 30),
+    mu = c(-1.5, -0.2, 1),
+    sigma = c(0.3, 0.8, 1.5),
+    # 1e-7 and 5e-5 take the series branch, the rest the general kernel
+    A = c(1e-7, 5e-5, 1e-3, 0.05, 0.5, 3, 20),
+    # both sides of the series switch, at the far ends of the time axis
+    always = function(g) {
+      (g$t == 30 & g$mu == 1 & g$sigma == 0.3 & g$A == 1e-7) |
+        (g$t == 0.02 & g$mu == -1.5 & g$sigma == 0.3 & g$A == 1e-3) |
+        (g$t == 30 & g$mu == 1 & g$sigma == 1.5 & g$A == 20)
+    }
+  )
+  for (i in seq_len(nrow(grid))) {
+    g <- grid[i, ]
+    info <- sprintf("t = %g, mu = %g, sigma = %g, A = %g", g$t, g$mu, g$sigma,
+                    g$A)
+    ld <- cogmod:::.lognormal_acc_ldens(g$t, g$mu, g$sigma, g$A)
+    lF <- cogmod:::.lognormal_acc_lcdf(g$t, g$mu, g$sigma, g$A)
+    lS <- cogmod:::.lognormal_acc_lccdf(g$t, g$mu, g$sigma, g$A)
+    expect_false(is.nan(ld) || is.nan(lF) || is.nan(lS), info = info)
+    expect_lte(lF, 0)
+    expect_lte(lS, 0)
+    rd <- ref_acc(g$t, g$mu, g$sigma, g$A, "dens")
+    rF <- ref_acc(g$t, g$mu, g$sigma, g$A, "cdf")
+    rS <- ref_acc(g$t, g$mu, g$sigma, g$A, "surv")
+    if (rd > 1e-250) expect_equal(exp(ld), rd, tolerance = 1e-7, info = info)
+    if (rF > 1e-250) expect_equal(exp(lF), rF, tolerance = 1e-7, info = info)
+    if (rS > 1e-250) expect_equal(exp(lS), rS, tolerance = 1e-7, info = info)
+    # and the two tails are complementary in their own right
+    if (is.finite(lF) && is.finite(lS)) {
+      expect_equal(exp(lF) + exp(lS), 1, tolerance = 1e-9, info = info)
+    }
+  }
+})
+
+test_that("with a start-point range the mixture still integrates to one", {
+  for (A in c(0.5, 3)) {
+    for (pout in c(0, 0.05)) {
+      total <- stats::integrate(
+        function(t) dcogmod_lognormal(t, -0.7, 0.5, ndt = 0.2, poutlier = pout,
+                                      sigmabias = A),
+        lower = 0, upper = Inf, subdivisions = 2000
+      )$value
+      expect_equal(total, 1, tolerance = 1e-5,
+                   info = sprintf("sigmabias %g, poutlier %g", A, pout))
+    }
+  }
+})
+
+test_that("pcogmod_lognormal integrates dcogmod_lognormal with a start-point range", {
+  for (q in c(0.25, 0.5, 1, 2.5)) {
+    num <- stats::integrate(
+      function(t) dcogmod_lognormal(t, -0.7, 0.5, ndt = 0.2, poutlier = 0.03,
+                                    sigmabias = 1),
+      0, q, rel.tol = 1e-10
+    )$value
+    expect_equal(pcogmod_lognormal(q, -0.7, 0.5, ndt = 0.2, poutlier = 0.03,
+                                   sigmabias = 1), num, tolerance = 1e-7)
+  }
+})
+
+test_that("the mean and the sampler carry the start-point range", {
+  set.seed(21)
+  n <- 200000
+  x <- rcogmod_lognormal(n, mu = -0.7, sigma = 0.5, ndt = 0.2, sigmabias = 1)
+  # E[T] = ndt + (1 + A / 2) exp(mu + sigma^2 / 2)
+  expect_equal(mean(x), 0.2 + 1.5 * exp(-0.7 + 0.125), tolerance = 0.005)
+  # and the sampler's quantiles match the CDF
+  for (p in c(0.1, 0.5, 0.9)) {
+    q <- unname(stats::quantile(x, p))
+    expect_equal(pcogmod_lognormal(q, -0.7, 0.5, ndt = 0.2, sigmabias = 1), p,
+                 tolerance = 0.01)
+  }
+  # posterior_epred() gets the same factor through the registry's mean
+  spec <- cogmod:::.shifted_spec("cogmod_lognormal")
+  expect_equal(spec$mean(list(mu = -0.7, sigma = 0.5, sigmabias = 1)),
+               1.5 * exp(-0.7 + 0.125))
+})
+
+test_that("a negative start-point range is rejected", {
+  expect_warning(d <- dcogmod_lognormal(0.5, sigmabias = -0.1))
+  expect_equal(d, 0)
+  expect_error(rcogmod_lognormal(5, sigmabias = -0.1), "sigmabias")
+})
+
+test_that("Stan cogmod_lognormal_lpdf, _lcdf and _lccdf match R with a start-point range", {
+  skip_on_cran()
+  skip_if_not_installed("cmdstanr")
+  lpdf <- stan_fun("cogmod_lognormal")
+  lcdf <- stan_fun("cogmod_lognormal", "_lcdf")
+  lccdf <- stan_fun("cogmod_lognormal", "_lccdf")
+  grid <- covering_grid(
+    Y = c(0.21, 0.25, 0.4, 0.8, 1.5, 6),
+    mu = c(-1.2, -0.5, 0.3),
+    sigma = c(0.3, 0.7, 1.2),
+    # 0 takes the plain lognormal branch, 1e-6 the series, the rest the general
+    # kernel on both sides of a = 0
+    sigmabias = c(0, 1e-6, 0.3, 2),
+    poutlier = c(0, 0.03),
+    always = function(g) g$sigmabias %in% c(0, 1e-6) & g$Y %in% c(0.21, 6)
+  )
+  for (i in seq_len(nrow(grid))) {
+    g <- grid[i, ]
+    info <- sprintf("Y = %g, mu = %g, sigma = %g, sigmabias = %g, poutlier = %g",
+                    g$Y, g$mu, g$sigma, g$sigmabias, g$poutlier)
+    r <- dcogmod_lognormal(g$Y, g$mu, g$sigma, 0.2, g$sigmabias, g$poutlier,
+                           log = TRUE)
+    s <- lpdf(g$Y, g$mu, g$sigma, g$sigmabias, 0.2, g$poutlier)
+    expect_lt(abs(s - r) / max(1, abs(r)), 1e-10, label = info)
+    rF <- pcogmod_lognormal(g$Y, g$mu, g$sigma, 0.2, g$sigmabias, g$poutlier,
+                            log.p = TRUE)
+    rS <- pcogmod_lognormal(g$Y, g$mu, g$sigma, 0.2, g$sigmabias, g$poutlier,
+                            lower.tail = FALSE, log.p = TRUE)
+    sF <- lcdf(g$Y, g$mu, g$sigma, g$sigmabias, 0.2, g$poutlier)
+    sS <- lccdf(g$Y, g$mu, g$sigma, g$sigmabias, 0.2, g$poutlier)
+    expect_lt(abs(sF - rF) / max(1, abs(rF)), 1e-9, label = paste(info, "lcdf"))
+    expect_lt(abs(sS - rS) / max(1, abs(rS)), 1e-9, label = paste(info, "lccdf"))
+  }
+  expect_equal(lpdf(0.5, -0.7, 0.5, -0.1, 0.2, 0.02), -Inf)
+})
+
+test_that("cogmod_priors fences the start-point range for cogmod_lognormal", {
+  set.seed(22)
+  d <- data.frame(RT = rcogmod_lognormal(150, ndt = 0.25, poutlier = 0.03),
+                  Condition = rep(c("a", "b"), length.out = 150))
+  modelled <- brms::bf(RT ~ 1, sigmabias ~ Condition, family = cogmod_lognormal())
+  p <- cogmod_priors(modelled, d)
+  expect_true(any(p$dpar == "sigmabias" & p$class == "Intercept" &
+                    p$prior == "normal(0, 1)"))
+  expect_true(any(p$dpar == "sigmabias" & p$class == "b" &
+                    p$prior == "normal(0, 0.5)"))
+  omitted <- brms::bf(RT ~ 1, family = cogmod_lognormal())
+  p2 <- cogmod_priors(omitted, d)
+  expect_true(any(p2$class == "sigmabias" &
+                    p2$prior == "lognormal(-0.35, 0.75)"))
+  # pinned in the formula it is not a parameter, so there is nothing to fence
+  pinned <- brms::bf(RT ~ 1, sigmabias = 0, family = cogmod_lognormal())
+  p3 <- cogmod_priors(pinned, d)
+  expect_false(any(p3$dpar == "sigmabias" | p3$class == "sigmabias"))
+  code <- brms::make_stancode(pinned, data = d, prior = p3,
+                              stanvars = cogmod_stanvars(pinned))
+  expect_true(grepl("real sigmabias = 0;", code, fixed = TRUE))
+  # and cens() builds with the range modelled (half the trials censored, which
+  # draws the heavy-censoring warning: not what this test is about)
+  d$cens <- rep(c(0L, 1L), length.out = 150)
+  censored <- brms::bf(RT | cens(cens) ~ 1, sigmabias ~ 1,
+                       family = cogmod_lognormal())
+  code2 <- brms::make_stancode(censored, data = d,
+                               prior = suppressWarnings(cogmod_priors(censored, d)),
+                               stanvars = cogmod_stanvars(censored))
+  expect_true(grepl("cogmod_lognormal_lccdf", code2, fixed = TRUE))
 })

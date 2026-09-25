@@ -178,6 +178,18 @@ trouble described next applies to it, and \code{\link[=cogmod_priors]{cogmod_pri
 it.
 }
 
+\section{The same accumulator with a LogNormal rate}{
+
+The other single-accumulator LBA in the package is \code{\link[=cogmod_lognormal]{cogmod_lognormal()}}:
+the same start point \code{Uniform(0, sigmabias)} and the same threshold offset,
+with a LogNormal rather than a truncated-Normal rate, so its \code{sigmabias = 0}
+limit is the shifted LogNormal where this family's is the recinormal. It
+lives under that name rather than here because a LogNormal rate's \code{sigma} is
+untouched by rescaling the evidence axis, so the threshold offset has to be
+the pin (it is fixed at 1 there) where here \code{sigma = 1} does the job. Two
+such accumulators raced against each other are \code{\link[=cogmod_lnr]{cogmod_lnr()}}.
+}
+
 \section{Estimating the start-point range}{
 
 Left free, \code{sigmabias} is estimable but treacherous, precisely because the
@@ -186,7 +198,7 @@ small enough, making it smaller stops changing the density, so the likelihood
 goes \strong{flat}. On a \code{softplus} link zero is at minus infinity, so a flat prior
 there leaves the posterior improper, and the symptom is a chain that wanders
 off rather than one that fails. Fitted without priors on the 4285-trial data
-in \code{vignette("rt_models")}, \code{sigmabias} for one condition ran to
+in the \href{https://dominiquemakowski.github.io/cogmod/articles/rt_models.html}{RT models article}, \code{sigmabias} for one condition ran to
 \code{softplus(-10.4) = 3e-05} with \code{Rhat} 1.69 and an effective sample size of 6.
 
 There are two ways out, and the choice is a modelling decision rather than a

@@ -4,16 +4,36 @@
 \alias{cogmod_inits}
 \title{Starting values that keep the sampler out of the flat regions}
 \usage{
-cogmod_inits(formula, data, jitter = 0.25, ...)
+cogmod_inits(formula = NULL, data = NULL, jitter = NULL, warmstart = NULL, ...)
 }
 \arguments{
 \item{formula}{The model formula, as passed to \code{brms::brm()}. Must carry the
-family, i.e. be built with \code{brms::bf(..., family = cogmod_gamma())}.}
+family, i.e. be built with \code{brms::bf(..., family = cogmod_gamma())}. May
+be left \code{NULL} only when \code{warmstart} is a \code{brmsfit}, whose formula is then
+used.}
 
-\item{data}{The data, as passed to \code{brms::brm()}.}
+\item{data}{The data, as passed to \code{brms::brm()}. May be left \code{NULL} only
+when \code{warmstart} is a \code{brmsfit}, whose data are then used.}
 
 \item{jitter}{SD of the noise added on the unconstrained scale, so that
-chains start at different points. Set to \code{0} for identical starts.}
+chains start at different points. One number is the SD for the
+population-level blocks, the intercepts and slopes; the group-level and
+smooth blocks - the standardized effects \verb{z_*} and \verb{zs_*} and their scales
+\verb{sd_*} and \verb{sds_*} - get a fifth of it, because a unit of noise there is
+multiplied through a scale and a design column before it reaches the
+linear predictor, and reaches it once per participant or basis function.
+Two numbers set the two tiers directly, population first. Set to \code{0} for
+identical starts. \code{NULL} (the default) means 0.25, so 0.05 on the
+hierarchical blocks, or 0.05 with a \code{warmstart}, whose values come from a
+converged posterior and should not be scattered far.}
+
+\item{warmstart}{A previous fit to start from instead of the family's
+generic values: a \code{brmsfit}, a \code{\link[=cogmod_warmstart]{cogmod_warmstart()}} object, the data frame
+\code{as.data.frame()} makes of one, or the path to a CSV file of it. The
+starting values are its posterior means, mapped onto this model by
+parameter name (a pilot on fewer participants included; see
+\code{\link[=cogmod_warmstart]{cogmod_warmstart()}}); whatever it has no value for keeps the value this
+function would give it anyway.}
 
 \item{...}{Passed to \code{brms::make_stancode()} and \code{brms::make_standata()}, for
 arguments such as \code{data2}.}
@@ -86,10 +106,27 @@ on the logit scale for a doubly bounded one - so a jittered value can never
 land outside its own bounds, and the chains still start dispersed enough for
 \code{Rhat} to mean something.
 
-\code{ndt} starts deliberately \strong{small} (0.1 s, a third of its prior median).
-The two errors are
-not symmetric: too small merely means the shift has to grow, which the
-gradient will do, whereas too large removes the gradient altogether.
+\code{ndt} starts deliberately \strong{below the data}: at half the first percentile
+of the observed response times (0.16 s for responses whose fastest
+hundredth sits at 0.32 s). The two errors are not symmetric: too small
+merely means the shift has to grow, which the gradient will do, whereas
+too large removes the gradient altogether. Half the first percentile keeps
+essentially every response above the start while following the scale of
+the data. A fixed 0.1 s did not: on responses whose non-decision time is
+0.6 s it sat half a second low, every decision time looked far too long, a
+driftless race then fit better than a fast one, and the first trajectory of
+a cold chain threw both drifts of a \code{\link[=cogmod_rdm]{cogmod_rdm()}} onto the flat region
+where the likelihood no longer depends on them, from which the chain did
+not return.
+
+The same asymmetry decides where \code{\link[=cogmod_rdm]{cogmod_rdm()}}'s error accumulator starts.
+A Wald density is thin on the fast side and flat on the slow side, so
+\code{driftone} starts at a third of \code{mu}'s drift rather than equal to it: too
+slow costs a few dozen log-density units, too fast costs hundreds, and a
+cold chain converts that difference into momentum along the flat
+\code{driftone} direction in its very first trajectory - far enough down it, on
+real data, for the step size to collapse and the chain to freeze for the
+rest of warmup.
 }
 
 \section{Supported families}{
@@ -102,8 +139,12 @@ The family is read off \code{formula}, so build it with
 \code{\link[=cogmod_weibull]{cogmod_weibull()}}, \code{\link[=cogmod_invweibull]{cogmod_invweibull()}}, \code{\link[=cogmod_logweibull]{cogmod_logweibull()}}, \code{\link[=cogmod_lba1]{cogmod_lba1()}} and,
 for the choice-and-RT models, \code{\link[=cogmod_lnr]{cogmod_lnr()}}, \code{\link[=cogmod_rdm]{cogmod_rdm()}},
 \code{\link[=cogmod_lba2]{cogmod_lba2()}} and \code{\link[=cogmod_ddm]{cogmod_ddm()}} - plus
-\code{\link[=cogmod_exgaussian]{cogmod_exgaussian()}}, whose three parameters are all on the RT scale behind a
-\code{softplus} link and so are equally badly served by starting at \code{log(2)}.
+\code{\link[=cogmod_exgaussian]{cogmod_exgaussian()}} and \code{\link[=cogmod_geg]{cogmod_geg()}}, whose parameters are all on the RT
+scale behind a \code{softplus} link and so are equally badly served by starting
+at \code{log(2)}.
+
+The two bounded-scale families for subjective ratings, \code{\link[=cogmod_choco]{cogmod_choco()}} and
+\code{\link[=cogmod_betadiscrete]{cogmod_betadiscrete()}}, are covered as well to help with warmup.
 }
 
 \examples{
@@ -111,6 +152,13 @@ d <- data.frame(RT = rcogmod_gamma(50, ndt = 0.3, poutlier = 0.02))
 f <- brms::bf(RT ~ 1, sigma ~ 1, ndt ~ 1, poutlier ~ 1, family = cogmod_gamma())
 inits <- cogmod_inits(f, d)
 inits(1)
+
+# The bounded-scale families are covered too. `pmid` starts at 0.05 rather
+# than the logit origin's 0.5, which would put half of every response
+# exactly on the midpoint of the scale.
+r <- data.frame(y = rcogmod_choco(50, pmid = 0.05))
+g <- brms::bf(y ~ 1, pmid ~ 1, family = cogmod_choco())
+cogmod_inits(g, r, jitter = 0)(1)
 
 \donttest{
 # Fitting needs cmdstanr, which lives outside CRAN - see the package website.

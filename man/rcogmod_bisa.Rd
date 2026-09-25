@@ -3,6 +3,7 @@
 \name{rcogmod_bisa}
 \alias{rcogmod_bisa}
 \alias{dcogmod_bisa}
+\alias{pcogmod_bisa}
 \alias{cogmod_bisa}
 \alias{cogmod_bisa_lpdf_expose}
 \alias{cogmod_bisa_stanvars}
@@ -14,6 +15,16 @@
 rcogmod_bisa(n, mu = 3, boundary = 0.5, ndt = 0.2, poutlier = 0)
 
 dcogmod_bisa(x, mu = 3, boundary = 0.5, ndt = 0.2, poutlier = 0, log = FALSE)
+
+pcogmod_bisa(
+  q,
+  mu = 3,
+  boundary = 0.5,
+  ndt = 0.2,
+  poutlier = 0,
+  lower.tail = TRUE,
+  log.p = FALSE
+)
 
 cogmod_bisa(
   link_mu = "softplus",
@@ -54,6 +65,14 @@ distribution reduces to the plain shifted LogNormal.}
 \item{x}{Vector of quantiles (observed reaction times).}
 
 \item{log}{Logical; if TRUE, probabilities p are given as log(p).}
+
+\item{q}{Vector of quantiles (reaction times, in seconds).}
+
+\item{lower.tail}{Logical; if TRUE (default), probabilities are \code{P[X <= q]},
+otherwise \code{P[X > q]} - the survival, which is what a right-censored
+response contributes to the likelihood (see the \emph{Censoring} section).}
+
+\item{log.p}{Logical; if TRUE, probabilities p are given as log(p).}
 
 \item{link_mu, link_boundary, link_ndt, link_poutlier}{Link functions for the
 parameters.}
@@ -97,6 +116,7 @@ Functions:
 \itemize{
 \item \code{rcogmod_bisa()}: Simulates random draws.
 \item \code{dcogmod_bisa()}: Computes the density (likelihood).
+\item \code{pcogmod_bisa()}: Computes the cumulative distribution function (CDF) or survival.
 \item \code{cogmod_bisa()}: Creates a \code{brms::custom_family()}.
 \item \code{cogmod_bisa_stanvars()}: Generates the \code{stanvars} to pass to \code{brm()}.
 }

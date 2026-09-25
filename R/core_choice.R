@@ -3,14 +3,14 @@
 #
 # The counterpart of core_shifted.R for the models that produce a *choice* as
 # well as a reaction time. The structure is the same - a decision-time
-# distribution shifted by `ndt`, mixed with a half Student-t outlier component
+# distribution shifted by `ndt`, mixed with a half Normal outlier component
 # of weight `poutlier` and a fixed scale - with one genuine difference, which is
 # why these cannot simply be added to `.SHIFTED`.
 #
 # A choice model has a *defective* density per response option `k`, with
 # `sum_k integral f_k(t) dt = 1`. A contaminant process therefore has to produce
 # a choice as well as an RT. The construction used here is a guess: the choice
-# is uniform over the `K` options and the RT comes from the same half Student-t
+# is uniform over the `K` options and the RT comes from the same half Normal
 # as in the RT-only families.
 #
 #   f(t, k) = poutlier * (1 / K) * g(t) + (1 - poutlier) * f_k(t - ndt)
@@ -62,36 +62,37 @@
   cogmod_lnr = list(
     # `mu` is nuzero: brms requires the first dpar of a custom family to be
     # called `mu`. Both nu are minus the log-scale mean, so larger = faster.
-    dpars = c("mu", "nuone", "sigmazero", "sigmaone"),
-    links = c("identity", "identity", "softplus", "softplus"),
-    lb = c(NA, NA, 0, 0), ub = c(NA, NA, NA, NA),
+    #
+    # `sigmabias` is the start-point range: each accumulator starts at
+    # Uniform(0, sigmabias) and runs to the threshold 1 + sigmabias, the
+    # threshold offset being pinned at 1 because sigma cannot pin the scale of
+    # a LogNormal rate. At sigmabias = 0 the family is the LNR exactly as it
+    # was before the parameter existed; above zero it is the LBA with LogNormal
+    # drift rates (Heathcote & Love, 2012). The derivation and the numerics
+    # live with the kernels in model_lnr.R.
+    dpars = c("mu", "nuone", "sigmazero", "sigmaone", "sigmabias"),
+    links = c("identity", "identity", "softplus", "softplus", "softplus"),
+    lb = c(NA, NA, 0, 0, 0), ub = c(NA, NA, NA, NA, NA),
+    # A start-point range of exactly zero is a model, not an invalid parameter
+    # - the plain LNR - so its bound is closed, as in cogmod_lba1() and
+    # cogmod_lba2(). The kernels take the plain lognormal branch there, so the
+    # nested model is reached exactly and at its own cost.
+    lb_open = c(NA, NA, TRUE, TRUE, FALSE),
     K = 2L,
     vars = "dec[n]",
-    stan_check = "sigmazero <= 0 || sigmaone <= 0",
+    stan_check = "sigmazero <= 0 || sigmaone <= 0 || sigmabias < 0",
     stan_dens = paste0(
       "dec == 0\n",
-      "      ? lognormal_lpdf(t_adj | -mu, sigmazero)",
-      " + lognormal_lccdf(t_adj | -nuone, sigmaone)\n",
-      "      : lognormal_lpdf(t_adj | -nuone, sigmaone)",
-      " + lognormal_lccdf(t_adj | -mu, sigmazero)"
+      "      ? cogmod_lnr_decision_lpdf(t_adj | mu, sigmazero,",
+      " nuone, sigmaone, sigmabias)\n",
+      "      : cogmod_lnr_decision_lpdf(t_adj | nuone, sigmaone,",
+      " mu, sigmazero, sigmabias)"
     ),
-    ldens = function(t, k, p) {
-      win_ml <- ifelse(k == 0, -p$mu, -p$nuone)
-      win_sd <- ifelse(k == 0, p$sigmazero, p$sigmaone)
-      los_ml <- ifelse(k == 0, -p$nuone, -p$mu)
-      los_sd <- ifelse(k == 0, p$sigmaone, p$sigmazero)
-      # lower.tail = FALSE gives the log-survival of the loser directly, which
-      # is stable where log(1 - exp(log F)) is not.
-      stats::dlnorm(t, meanlog = win_ml, sdlog = win_sd, log = TRUE) +
-        stats::plnorm(t, meanlog = los_ml, sdlog = los_sd,
-                      lower.tail = FALSE, log.p = TRUE)
-    },
-    rng = function(n, p) {
-      d0 <- stats::rlnorm(n, meanlog = -p$mu, sdlog = p$sigmazero)
-      d1 <- stats::rlnorm(n, meanlog = -p$nuone, sdlog = p$sigmaone)
-      list(rt = pmin(d0, d1), response = as.numeric(d0 >= d1))
-    },
-    init = list(mu = 0.7, nuone = 0.7, sigmazero = 0.5, sigmaone = 0.5),
+    prelude = ".LNR_STAN_PRELUDE",
+    ldens = function(t, k, p) .lnr_ldens(t, k, p),
+    rng = function(n, p) .lnr_rng(n, p),
+    init = list(mu = 0.7, nuone = 0.7, sigmazero = 0.5, sigmaone = 0.5,
+                sigmabias = 0.5),
     # Push an accumulator's rate down far enough and it stops finishing first
     # ever; the density then depends on it only through the loser's survival
     # term, which has already saturated at 1. Beyond about nuone = -6 the
@@ -114,14 +115,26 @@
       sigmazero = c(link = "normal(0, 1)", nat = "lognormal(-0.7, 0.75)",
                     slope = "normal(0, 0.5)"),
       sigmaone = c(link = "normal(0, 1)", nat = "lognormal(-0.7, 0.75)",
-                   slope = "normal(0, 0.5)")
+                   slope = "normal(0, 0.5)"),
+      # `sigmabias` has the flat direction cogmod_lba1()'s has: as the range
+      # approaches zero the model converges to the LNR and the likelihood stops
+      # changing, while the softplus link reaches zero only at minus infinity.
+      # The rows are cogmod_lba1()'s rescaled to this family's unit, the
+      # threshold offset of 1 (there the offset is of order 0.5): a range of
+      # the same order as the offset, median about 0.7 on both scales, and not
+      # zero. Fixing `sigmabias = 0` in bf() sidesteps all of it, and is the
+      # recommendation.
+      sigmabias = c(link = "normal(0, 1)", nat = "lognormal(-0.35, 0.75)",
+                    slope = "normal(0, 0.5)")
     ),
     dpar_doc = c(
       "dec: the observed choice, 0 or 1.",
       paste("mu: nuzero, the processing speed of accumulator 0",
             "(meanlog = -mu, so larger is faster)."),
       "nuone: the same for accumulator 1.",
-      "sigmazero, sigmaone: the log-scale SD of each accumulator (> 0)."
+      "sigmazero, sigmaone: the log-scale SD of each accumulator (> 0).",
+      paste("sigmabias: start-point range, in units of the threshold offset",
+            "(>= 0); 0 is the plain LNR.")
     ),
     label = "Log-Normal Race"
   ),
@@ -160,7 +173,26 @@
     prelude = ".RDM_STAN_PRELUDE",
     ldens = function(t, k, p) .rdm_ldens(t, k, p),
     rng = function(n, p) .rdm_rng(n, p),
-    init = list(mu = 3, driftone = 3, sigmabias = 0.3, boundary = 0.5),
+    # The error accumulator starts SLOWER than the correct one, at a third of
+    # its drift, and the asymmetry is the point. A Wald density is thin on the
+    # fast side and flat on the slow side (see the `driftone` plateau below),
+    # so a start that is too fast costs far more log-density than one that is
+    # too slow: on the speed_acc benchmark data, whose error drift is about
+    # 0.2, driftone = 3 started 400 log-density units above the mode and
+    # driftone = 1 about 30. That potential energy is what a cold chain's first
+    # HMC trajectory converts into momentum, and with a flat plateau to run
+    # along it carried the chain from a link value of +3 to -20 in the first
+    # transition, where the step size then collapsed to 1e-5 and the chain sat
+    # frozen through every adaptation window. One chain in four did this on an
+    # 800-trial mixed model with a 200-iteration warmup, and five in six when
+    # handed a metric adapted to the bulk. Starting at 1 removed the cold-start
+    # failures and two thirds of the transferred-metric ones; the rest were the
+    # other cold start, `ndt`, which cogmod_inits() now takes from the data for
+    # the same reason (benchmarks/rdm_brittleness_report.md, section 7). When
+    # the error accumulator really is as fast as the correct one the start is
+    # off by a factor of three on the cheap side, which costs a few dozen units
+    # and makes no difference to sampling.
+    init = list(mu = 3, driftone = 1, sigmabias = 0.3, boundary = 0.5),
     # `sigmabias` and `boundary` enter the threshold only through their sum,
     # b = boundary + sigmabias, and trade off along a very flat ridge: on
     # simulated data with 4000 trials the profile log-likelihood moves by only
@@ -254,7 +286,7 @@
                   "boundary"),
     init = list(mu = 3, driftone = 3, sigmazero = 1, sigmaone = 1,
                 sigmabias = 0.5, boundary = 0.5),
-    # Two flat directions here, not one.
+    # Three flat directions here, not one.
     #
     # `sigmabias` and `boundary` share the ridge cogmod_lba1() and cogmod_rdm()
     # have: they enter only through the sum b = boundary + sigmabias.
@@ -267,7 +299,23 @@
     # identify the scale. Fix one SD in the formula (`sigmazero = 1` in bf(),
     # the usual convention) if the individual parameters are to be interpreted
     # rather than the RT distribution they generate. See ?rcogmod_lba2.
+    #
+    # `driftone` has the plateau the truncation creates. A Normal truncated at
+    # zero whose location runs off to -Inf while its scale grows, with the ratio
+    # |location| / scale^2 held fixed, converges to an Exponential - so once an
+    # accumulator rarely wins, its `drift` and `sigma` are identified only
+    # through that ratio and the likelihood is asymptotically flat along the
+    # ray. Left flat, the vignette's error accumulator sat at a drift of -12
+    # with an interval of -23 to -6.5, on an evidence scale where the correct
+    # accumulator's drift is 3. The prior is centred where LBA drifts on the
+    # `sigmazero = 1` scale usually are and fences the ray; `mu` - driftzero -
+    # has the same plateau, but it is the response's own intercept, so brms
+    # already gives it a proper student_t default and it is left alone, exactly
+    # as for cogmod_lnr()'s `nuone`. Model a rarely-chosen option on
+    # `mu` and it is worth mirroring this prior onto it by hand.
     prior = list(
+      driftone = c(link = "normal(1, 2)", nat = "normal(1, 2)",
+                   slope = "normal(0, 1.5)"),
       sigmazero = c(link = "normal(0, 1)", nat = "lognormal(-0.7, 0.75)",
                     slope = "normal(0, 0.5)"),
       sigmaone = c(link = "normal(0, 1)", nat = "lognormal(-0.7, 0.75)",
@@ -286,13 +334,15 @@
       "boundary: threshold offset, so the threshold is b = boundary + sigmabias."
     ),
     note = c(
-      "A normal drift can come out negative, and such an accumulator never",
-      "reaches the threshold. The decision density is therefore conditioned on",
-      "at least one of the two drifts being positive - the event the process",
-      "itself is conditioned on, since a trial with neither is not a trial.",
-      "Without that normalisation the density integrates to the probability of",
-      "the event rather than to one, which at low drift rates is a long way",
-      "short: 0.83 at drifts of 0.5 and 0.2 with SDs of 1.5."
+      "Each drift rate is a Normal truncated at zero - the convention of",
+      "rtdists (posdrift = TRUE), DMC, EMC2 and ggdmc, so estimates are",
+      "comparable with theirs. A negative drift would never reach the",
+      "threshold; without the truncation the density integrates to the",
+      "probability that at least one accumulator finishes rather than to one,",
+      "which at low drift rates is a long way short: 0.83 at drifts of 0.5 and",
+      "0.2 with SDs of 1.5. `mu`, `driftone`, `sigmazero` and `sigmaone` are",
+      "the location and scale of the UNtruncated Normal, not the mean and SD of",
+      "the drifts actually realised."
     ),
     label = "two-accumulator LBA"
   ),
@@ -363,9 +413,7 @@
       "   with `ndt` its lower bound."
     ),
     note = c(
-      "sigmandt is st0 itself, in seconds, not a fraction of anything. It used",
-      "to be a multiple of a `minrt` dpar that no longer exists, and naming it",
-      "after `tau` outlived that parameter too."
+      "sigmandt is st0 itself, in seconds, not a fraction of anything."
     ),
     label = "Drift Diffusion"
   )
@@ -497,7 +545,7 @@
 //
 // The 1 / %s is what keeps the total density summing to one over the response
 // options; without it it comes to 1 + poutlier. The leading constant below
-// carries it, along with the normalising constant of the Student-t and the
+// carries it, along with the normalising constant of the Normal and the
 // log(2) that folds it onto [0, Inf) - all of them constant, so writing them
 // out saves Stan recomputing them for every observation on every leapfrog step.
 %sreal %s_lpdf(%s) {
@@ -662,7 +710,7 @@
 }
 
 
-# Log-density of the outlier component: the half-t, thinned by the K options the
+# Log-density of the outlier component: the half Normal, thinned by the K options
 # guess is spread over.
 #' @keywords internal
 .lout_choice <- function(x, K) {

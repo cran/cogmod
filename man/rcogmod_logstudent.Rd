@@ -3,6 +3,7 @@
 \name{rcogmod_logstudent}
 \alias{rcogmod_logstudent}
 \alias{dcogmod_logstudent}
+\alias{pcogmod_logstudent}
 \alias{cogmod_logstudent}
 \alias{cogmod_logstudent_lpdf_expose}
 \alias{cogmod_logstudent_stanvars}
@@ -21,6 +22,17 @@ dcogmod_logstudent(
   ndt = 0.2,
   poutlier = 0,
   log = FALSE
+)
+
+pcogmod_logstudent(
+  q,
+  mu = -0.7,
+  sigma = 0.4,
+  dof = 5,
+  ndt = 0.2,
+  poutlier = 0,
+  lower.tail = TRUE,
+  log.p = FALSE
 )
 
 cogmod_logstudent(
@@ -65,6 +77,14 @@ distribution reduces to the plain shifted LogNormal.}
 
 \item{log}{Logical; if TRUE, probabilities p are given as log(p).}
 
+\item{q}{Vector of quantiles (reaction times, in seconds).}
+
+\item{lower.tail}{Logical; if TRUE (default), probabilities are \code{P[X <= q]},
+otherwise \code{P[X > q]} - the survival, which is what a right-censored
+response contributes to the likelihood (see the \emph{Censoring} section).}
+
+\item{log.p}{Logical; if TRUE, probabilities p are given as log(p).}
+
 \item{link_mu, link_sigma, link_dof, link_ndt, link_poutlier}{Link functions for
 the parameters.}
 
@@ -108,6 +128,7 @@ Functions:
 \itemize{
 \item \code{rcogmod_logstudent()}: Simulates random draws.
 \item \code{dcogmod_logstudent()}: Computes the density (likelihood).
+\item \code{pcogmod_logstudent()}: Computes the cumulative distribution function (CDF) or survival.
 \item \code{cogmod_logstudent()}: Creates a \code{brms::custom_family()}.
 \item \code{cogmod_logstudent_stanvars()}: Generates the \code{stanvars} to pass to \code{brm()}.
 }
@@ -116,7 +137,10 @@ Functions:
 \code{log(RT - ndt)} follows a \strong{Student-t} distribution with location \code{mu},
 scale \code{sigma} and \code{dof} degrees of freedom. As \code{dof} grows the Student-t
 becomes the Normal, so \code{\link[=cogmod_lognormal]{cogmod_lognormal()}} is the \code{dof -> Inf} limit: this
-family varies \strong{kurtosis} where \code{\link[=cogmod_loggamma]{cogmod_loggamma()}} varies skew.
+family varies \strong{kurtosis} where \code{\link[=cogmod_loggamma]{cogmod_loggamma()}} varies skew. It has no
+\code{sigmabias}: the start-point range of \code{\link[=cogmod_lognormal]{cogmod_lognormal()}} needs a partial
+first moment of the rate distribution, and \code{exp()} of a Student-t has no
+moments at all.
 
 \code{dof} is what \code{brms::student()} calls \code{nu}. It is renamed here because
 \code{\link[=cogmod_lnr]{cogmod_lnr()}} already spends \code{nuzero} and \code{nuone} on drift rates, and

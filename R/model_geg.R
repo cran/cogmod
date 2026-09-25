@@ -218,7 +218,8 @@ pcogmod_geg <- function(q, mu = 0.4, sigma = 0.1, tau = 0.2, shape = 1,
 # Both terms are computed on the log scale and subtracted with log1mexp, because
 # in the left tail they are individually tiny and very close together - which is
 # exactly where the GEG needs the CDF, since `shape < 1` multiplies log F_EG by a
-# negative number and any error there is amplified.
+# negative number and any error there is amplified. Mirrors the Stan
+# cogmod_exgaussian_logcdf() (.EXGAUSSIAN_STAN_PRELUDE, model_exgaussian.R).
 #' @keywords internal
 .lcdf_exgaussian <- function(x, mu, sigma, tau) {
     z <- (x - mu) / sigma
@@ -341,7 +342,7 @@ cogmod_geg <- function(
 
 #' @keywords internal
 .cogmod_geg_lpdf <- function() {
-    "
+    paste0(.EXGAUSSIAN_STAN_PRELUDE, "
 // Log-likelihood for a single observation from the Generalised Ex-Gaussian.
 // Y: observed reaction time.
 // mu: location of the Gaussian component. Unbounded, as for the ex-Gaussian.
@@ -354,16 +355,44 @@ real cogmod_geg_lpdf(real Y, real mu, real sigma, real tau, real shape) {
     // Parameter checks
     if (sigma <= 0 || tau <= 0 || shape <= 0) return negative_infinity();
 
-    // Stan's exp_mod_normal is parameterized by the exponential RATE (1 / tau),
-    // and ships both the lpdf and the lcdf, so the alpha-power construction
+    // The alpha-power construction
     //     f(x) = shape * F(x)^(shape - 1) * f(x)
-    // needs no numerical work of its own.
-    real lambda = inv(tau);
-    return log(shape)
-         + (shape - 1) * exp_mod_normal_lcdf(Y | mu, sigma, lambda)
-         + exp_mod_normal_lpdf(Y | mu, sigma, lambda);
+    // needs the ex-Gaussian's density AND its CDF at every evaluation. Neither
+    // comes from Stan's exp_mod_normal here: its lcdf() has the value but not
+    // the partials, and `shape - 1` multiplies that term straight into the
+    // gradient.
+    //
+    // The two lines below are cogmod_exgaussian_logcdf() and
+    // cogmod_exgaussian_ldens() written out rather than called, because the
+    // density is the CDF's second term over tau - `lb` serves both - and
+    // calling the two would evaluate cogmod_log_Phi(z - sigma / tau) twice.
+    // Returning the pair from one function instead was measured and is worse
+    // still; see .EXGAUSSIAN_STAN_PRELUDE in model_exgaussian.R. The R side
+    // (dcogmod_geg()) keeps the redundancy, being vectorised and not
+    // differentiated.
+    real z = (Y - mu) / sigma;
+    real la = cogmod_log_Phi(z);
+    real lb = square(sigma) / (2 * square(tau)) - (Y - mu) / tau
+                + cogmod_log_Phi(z - sigma / tau);
+    real d = fmin(lb - la, -2.220446049250313e-16);
+    return log(shape) + (shape - 1) * (la + log1m_exp(d)) + lb - log(tau);
 }
-"
+
+// CDF and survival, for brms's cens() addition term (see ?rcogmod_invgaussian
+// for what censoring a reaction time means). log F_GEG = shape * log F_EG is
+// the construction itself; the survival has no positive-terms form of its own,
+// so it is the log1m_exp of that.
+real cogmod_geg_lcdf(real Y, real mu, real sigma, real tau, real shape) {
+    if (sigma <= 0 || tau <= 0 || shape <= 0) return negative_infinity();
+    return shape * cogmod_exgaussian_logcdf(Y, mu, sigma, tau);
+}
+
+real cogmod_geg_lccdf(real Y, real mu, real sigma, real tau, real shape) {
+    if (sigma <= 0 || tau <= 0 || shape <= 0) return negative_infinity();
+    real lF = shape * cogmod_exgaussian_logcdf(Y, mu, sigma, tau);
+    return lF < 0 ? log1m_exp(lF) : negative_infinity();
+}
+")
 }
 
 
@@ -426,10 +455,23 @@ log_lik_cogmod_geg <- function(i, prep) {
     ll <- rep(-Inf, n_draws)
     if (!all(bad)) {
         k <- !bad
-        ll[k] <- base::log(shape[k]) +
-            (shape[k] - 1) *
-                .lcdf_exgaussian(y_vec[k], mu[k], sigma[k], tau[k]) +
-            dcogmod_exgaussian(y_vec[k], mu[k], sigma[k], tau[k], log = TRUE)
+        # .censor_ll() honours a `cens()` term on the formula, which brms
+        # leaves to a custom family's own log_lik method.
+        ll[k] <- .censor_ll(
+            prep, i, y,
+            ldens = function(y) {
+                yv <- rep(y, length.out = sum(k))
+                base::log(shape[k]) +
+                    (shape[k] - 1) *
+                        .lcdf_exgaussian(yv, mu[k], sigma[k], tau[k]) +
+                    dcogmod_exgaussian(yv, mu[k], sigma[k], tau[k], log = TRUE)
+            },
+            lcdf = function(y, lower.tail) {
+                yv <- rep(y, length.out = sum(k))
+                lp <- shape[k] * .lcdf_exgaussian(yv, mu[k], sigma[k], tau[k])
+                if (lower.tail) lp else .log1mexp(lp)
+            }
+        )
     }
 
     ll[is.nan(ll) | is.na(ll)] <- -Inf

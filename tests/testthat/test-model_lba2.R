@@ -2,7 +2,9 @@ context("LBA2 - shifted two-accumulator LBA with outliers")
 
 # Reference implementation of the mixture, written out longhand from Brown &
 # Heathcote (2008). Two things it makes explicit: the 1/K on the outlier
-# component, and the conditioning on at least one positive drift.
+# component, and the truncation of each drift at zero, which divides each
+# accumulator's own density and CDF by its P(v > 0) - the rtdists
+# `posdrift = TRUE` convention.
 ref_dens <- function(y, driftzero, driftone, sigmazero, sigmaone, sigmabias,
                      boundary, ndt, response, poutlier) {
   d_out <- 2 * stats::dnorm(y, 0, 0.2) / 2
@@ -26,10 +28,8 @@ ref_dens <- function(y, driftzero, driftone, sigmazero, sigmaone, sigmabias,
       ((b - v_los * t) / A) * stats::pnorm(n2(v_los, s_los)) +
       ((t * s_los) / A) * (stats::dnorm(n1(v_los, s_los)) -
                              stats::dnorm(n2(v_los, s_los)))
-    # the conditioning: a trial on which both drifts are negative is not a trial
-    pneg <- stats::pnorm(-driftzero / sigmazero) *
-      stats::pnorm(-driftone / sigmaone)
-    f * (1 - cdf) / (1 - pneg)
+    # the truncation: each accumulator is normalised by its own P(v > 0)
+    (f / stats::pnorm(v_win / s_win)) * (1 - cdf / stats::pnorm(v_los / s_los))
   } else {
     0
   }
@@ -86,9 +86,9 @@ test_that("dcogmod_lba2 matches the mixture density", {
 
 test_that("the density sums to one over responses and integrates to one", {
   # Two things this catches. The 1/K on the outlier component - without it the
-  # total comes to 1 + poutlier. And the conditioning on at least one positive
-  # drift - without it the total comes to the probability of that event, which
-  # at the low-drift settings below is 0.83.
+  # total comes to 1 + poutlier. And the truncation of each drift at zero -
+  # without it the total comes to the probability that at least one
+  # accumulator finishes, which at the low-drift settings below is 0.83.
   grid <- list(
     c(driftzero = 3, driftone = 2, sigmazero = 1, sigmaone = 1,
       sigmabias = 0.5, boundary = 0.5, ndt = 0.2),
@@ -121,8 +121,11 @@ test_that("the density sums to one over responses and integrates to one", {
 
 
 test_that("the density integrates to one with both drifts negative", {
-  # The case the missing normalisation was worst for: here the conditioning
-  # event has probability 0.26, so an unnormalised density would come to that.
+  # The case the missing normalisation was worst for: here P(v > 0) is 0.02 and
+  # 0.07, so an untruncated density would integrate to under a tenth. It is
+  # also the case where the loser's survival has to be taken from the upper
+  # tail - both P(v > 0) and the untruncated CDF are tiny - so it exercises
+  # that branch of .lba_lsurv_trunc() end to end.
   total <- sum(vapply(0:1, function(k) {
     stats::integrate(
       function(t) {
@@ -267,9 +270,11 @@ test_that("rcogmod_lba2 returns rt and response", {
 
 
 test_that("rcogmod_lba2 reproduces its own density", {
-  # The check the conditioning exists for. Before it, the empirical choice
-  # proportion at the low-drift settings was 0.562 against an integral of 0.468:
-  # the sampler and the density described different models.
+  # The check the truncation exists for: the sampler draws truncated drifts and
+  # the density is normalised by the same P(v > 0), so choice proportions and
+  # RT quantiles have to agree. Before either was in place, the empirical
+  # choice proportion at the low-drift settings was 0.562 against an integral
+  # of 0.468: the sampler and the density described different models.
   set.seed(42)
   n <- 40000
   for (g in list(
@@ -311,13 +316,13 @@ test_that("rcogmod_lba2 reproduces its own density", {
 })
 
 
-test_that("rcogmod_lba2 conditions exactly, with both drifts negative", {
-  # Both means below zero, so most draws from the unconditional joint would
-  # produce no response at all. The exact split - accumulator 0 positive, or
-  # accumulator 0 non-positive and accumulator 1 positive - replaces the
-  # rejection loop the old implementation bounded with `max_iter` and then gave
-  # up on, forcing a drift positive with `abs()` and silently drawing from the
-  # wrong distribution.
+test_that("rcogmod_lba2 truncates exactly, with both drifts negative", {
+  # Both means below zero, so most draws from the untruncated Normals would
+  # produce no response at all. Each drift comes from its truncated Normal
+  # directly (.rnorm_truncated() switches to an exponential proposal out in
+  # the tail), so there is no rejection loop to bound and give up on - the old
+  # implementation did, forcing a drift positive with `abs()` and silently
+  # drawing from the wrong distribution.
   set.seed(5)
   sim <- rcogmod_lba2(40000, -2, -1.5, 1, 1, 0.5, 0.5, ndt = 0.2)
   expect_true(all(is.finite(sim$rt)))
@@ -354,24 +359,60 @@ test_that("rcogmod_lba2 errors on invalid parameters", {
 
 # the shared LBA kernels --------------------------------------------------
 
-test_that("the shared survival is exact where 1 - CDF would cancel", {
-  # S(t) = (g(z2) - g(z1)) / delta, taken directly rather than as 1 - CDF.
-  # Checked against integrating the defective density it complements.
+test_that("the truncated survival is exact in both tails", {
+  # log P(unfinished | v > 0), taken as (S - q) / (1 - q) for a positive drift
+  # and as ((1 - q) - F) / (1 - q) from the upper tail for a negative one, so
+  # neither `1 - CDF` nor `1 - q` is ever formed where it would cancel. Checked
+  # against integrating the defective density it complements, over both signs
+  # of the drift, start-point ranges down to the Taylor branch, and out to a
+  # far tail where the survival is a few e-4.
   for (prm in list(c(v = 3, s = 1, A = 0.5, k = 0.5),
                    c(v = 1, s = 1.5, A = 0.05, k = 1),
-                   c(v = 0.5, s = 2, A = 1e-5, k = 0.4))) {
+                   c(v = 0.5, s = 2, A = 1e-5, k = 0.4),
+                   c(v = -1, s = 1, A = 0.5, k = 0.5),
+                   c(v = -3, s = 1, A = 0.3, k = 0.7),
+                   c(v = -3, s = 1, A = 1e-6, k = 0.7))) {
     v <- prm[["v"]]; s <- prm[["s"]]; A <- prm[["A"]]; k <- prm[["k"]]
-    for (t in c(0.1, 0.5, 2)) {
+    for (t in c(0.1, 0.5, 2, 20)) {
       st <- max(s * t, 1e-10)
-      surv <- cogmod:::.lba_surv_raw(v, s, st, (k - v * t) / st, A / st)
+      lsurv <- cogmod:::.lba_lsurv_trunc(v, s, (k - v * t) / st, A / st)
       dens <- function(u) {
         stu <- pmax(s * u, 1e-10)
         cogmod:::.lba_dens_over_A(v, s, stu, (k - v * u) / stu, A / stu)
       }
       num <- 1 - stats::integrate(dens, 0, t, subdivisions = 3000,
-                                  rel.tol = 1e-11)$value
-      expect_equal(surv, num, tolerance = 1e-9,
-                   label = sprintf("S at v=%g A=%g t=%g", v, A, t))
+                                  rel.tol = 1e-12)$value / stats::pnorm(v / s)
+      expect_equal(lsurv, log(num), tolerance = 1e-9,
+                   label = sprintf("log S at v=%g A=%g t=%g", v, A, t))
+    }
+  }
+})
+
+
+test_that("dcogmod_lba2 reproduces rtdists::dLBA", {
+  # Same convention - each drift a Normal truncated at zero - so the two have
+  # to agree at the same parameter values. They do, at every ordinary RT. The
+  # comparison is on the density scale, where the tails carry no weight,
+  # because out there rtdists forms the survival as 1 - CDF and loses it to
+  # cancellation at log-densities of -17 and below - which is the reason the
+  # kernel above exists.
+  skip_if_not_installed("rtdists")
+  b <- 1.2
+  for (dr in list(c(3, 2), c(0.5, 0.2), c(-0.5, 2), c(-2, -1.5), c(5, 5))) {
+    for (A in c(0.5, 0.05, 1e-3)) {
+      rt <- seq(0.05, 3, by = 0.05)
+      for (k in 0:1) {
+        ours <- dcogmod_lba2(rt, dr[1], dr[2], 1, 0.8, sigmabias = A,
+                             boundary = b - A, ndt = 0, response = k,
+                             poutlier = 0)
+        ref <- rtdists::dLBA(rt, k + 1, A = A, b = b, t0 = 0, mean_v = dr,
+                             sd_v = c(1, 0.8), silent = TRUE)
+        keep <- is.finite(ref)
+        expect_true(any(keep))
+        expect_equal(ours[keep], ref[keep], tolerance = 1e-8,
+                     label = sprintf("drifts %s, A = %g, response %d",
+                                     paste(dr, collapse = ","), A, k))
+      }
     }
   }
 })
@@ -381,9 +422,9 @@ test_that("the shared kernels are the ones cogmod_lba1() uses", {
   # cogmod_lba1() and cogmod_lba2() differ in how many accumulators they run,
   # not in the per-accumulator arithmetic, so they share one implementation.
   expect_true(is.function(cogmod:::.lba_dens_over_A))
-  expect_true(is.function(cogmod:::.lba_surv_raw))
+  expect_true(is.function(cogmod:::.lba_lsurv_trunc))
   expect_true(grepl("cogmod_lba_dens_over_A", cogmod:::.LBA_STAN_PRELUDE))
-  expect_true(grepl("cogmod_lba_surv", cogmod:::.LBA_STAN_PRELUDE))
+  expect_true(grepl("cogmod_lba_lsurv_trunc", cogmod:::.LBA_STAN_PRELUDE))
   # ... and cogmod_lba2()'s prelude is that one plus its own race on top
   expect_true(startsWith(cogmod:::.LBA2_STAN_PRELUDE,
                          cogmod:::.LBA_STAN_PRELUDE))
@@ -503,10 +544,11 @@ test_that("stanvars carry the likelihood with the outlier component", {
   expect_true(grepl("half Normal with scale 0.2", code))
   # the shared kernels and the race built on them
   expect_true(grepl("real cogmod_lba_dens_over_A", code))
-  expect_true(grepl("real cogmod_lba_surv", code))
+  expect_true(grepl("real cogmod_lba_lsurv_trunc", code))
   expect_true(grepl("real cogmod_lba2_decision_lpdf", code))
-  # the conditioning
-  expect_true(grepl("log1m_exp\\(lq\\)", code))
+  # the truncation: the winner is normalised by its own P(v > 0)
+  expect_true(grepl("std_normal_lcdf\\(v_win / s_win\\)", code))
+  expect_false(grepl("log1m_exp\\(lq\\)", code))
   # the old parameterization is gone
   expect_false(grepl("real tau", code))
   expect_false(grepl("real minrt", code))
@@ -529,8 +571,9 @@ test_that("Stan cogmod_lba2_lpdf matches dcogmod_lba2", {
     ndt = c(0, 0.15, 0.4),
     poutlier = c(0, 0.001, 0.4),
     dec = 0:1,
-    # a negative mean drift makes the conditioning bite, so that slice is swept
-    # in full rather than left to the covering subset
+    # a negative mean drift makes the truncation bite - and sends the loser's
+    # survival down its upper-tail branch - so that slice is swept in full
+    # rather than left to the covering subset
     always = function(g) {
       g$mu == -0.5 & g$sigmazero == 1 & g$boundary == 0.2 & g$poutlier == 0.001
     }
@@ -589,7 +632,7 @@ test_that("cogmod_priors fills ndt and poutlier for cogmod_lba2", {
                        poutlier ~ 1, family = cogmod_lba2())
   p <- cogmod_priors(modelled, d)
   expect_true(any(p$dpar == "ndt" & p$class == "Intercept" &
-                    p$prior == "normal(-1.2, 0.2)"))
+                    p$prior == "normal(-1.2, 0.5)"))
   expect_true(any(p$dpar == "poutlier" & p$class == "Intercept" &
                     p$prior == "normal(-5, 1)"))
 
@@ -599,7 +642,7 @@ test_that("cogmod_priors fills ndt and poutlier for cogmod_lba2", {
                                         family = cogmod_lba2())$prior)))
   p2 <- cogmod_priors(omitted, d)
   expect_false(any(grepl("uniform", p2$prior)))
-  expect_true(any(p2$class == "ndt" & p2$prior == "lognormal(-1.2, 0.2)"))
+  expect_true(any(p2$class == "ndt" & p2$prior == "lognormal(-1.2, 0.5)"))
   expect_true(any(p2$class == "poutlier" & p2$prior == "exponential(100)"))
 
   mixed <- brms::bf(RT | dec(Error) ~ Condition + (1 | id), ndt ~ Condition,
@@ -803,4 +846,38 @@ test_that("cogmod_lba2 recovers ndt above the fastest observed response", {
 
   expect_true(with_outliers(fit)$family$predict_outliers)
   expect_false(without_outliers(fit)$family$predict_outliers)
+})
+
+
+test_that("a mixed vector of start-point ranges takes each branch it needs", {
+  # Same check as in test-model_lba1.R, for the same reason: the shared kernels
+  # branch on delta = A / (sigma t) element by element, and rtdists's lognormal
+  # and gamma LBAs got exactly that subsetting wrong (rtdists/rtdists#24). Here
+  # the survival of the losing accumulator branches too, and the response mixes
+  # which accumulator is which.
+  A <- c(0, 1e-9, 1e-6, 1e-5, 0.2, 0.7)
+  t <- c(0.45, 0.6, 0.9, 0.5, 0.7, 1.1)
+  ndt <- c(0.2, 0.3, 0.1, 0.25, 0.2, 0.15)
+  k <- c(0L, 1L, 0L, 1L, 1L, 0L)
+  mixed <- dcogmod_lba2(t, driftzero = 3, driftone = 2, sigmazero = 1,
+                        sigmaone = 1.2, sigmabias = A, boundary = 0.5,
+                        ndt = ndt, response = k, poutlier = 0.02)
+  each <- vapply(seq_along(A), function(i) {
+    dcogmod_lba2(t[i], driftzero = 3, driftone = 2, sigmazero = 1,
+                 sigmaone = 1.2, sigmabias = A[i], boundary = 0.5,
+                 ndt = ndt[i], response = k[i], poutlier = 0.02)
+  }, numeric(1))
+  expect_identical(mixed, each)
+  expect_true(all(is.finite(mixed) & mixed > 0))
+
+  # And the small branch shifts with ndt like every other.
+  expect_equal(
+    dcogmod_lba2(t + 0.1, driftzero = 3, driftone = 2, sigmazero = 1,
+                 sigmaone = 1.2, sigmabias = A, boundary = 0.5,
+                 ndt = ndt + 0.1, response = k, poutlier = 0),
+    dcogmod_lba2(t, driftzero = 3, driftone = 2, sigmazero = 1,
+                 sigmaone = 1.2, sigmabias = A, boundary = 0.5,
+                 ndt = ndt, response = k, poutlier = 0),
+    tolerance = 1e-12
+  )
 })

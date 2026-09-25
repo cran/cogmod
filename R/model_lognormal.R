@@ -9,6 +9,7 @@
 #' Functions:
 #' - `rcogmod_lognormal()`: Simulates random draws from the shifted LogNormal model.
 #' - `dcogmod_lognormal()`: Computes the density (likelihood).
+#' - `pcogmod_lognormal()`: Computes the cumulative distribution function (CDF) or survival.
 #' - `cogmod_lognormal()`: Creates a `brms::custom_family()` for use in `brms` models.
 #' - `cogmod_lognormal_stanvars()`: Generates the `stanvars` to pass to `brm()`.
 #' - `p_outlier()`: Per-trial posterior probability of being an outlier.
@@ -18,7 +19,54 @@
 #'
 #' The observed reaction time is `ndt + LogNormal(mu, sigma)`, so `mu` and
 #' `sigma` are the mean and SD of the *decision time* on the log scale, and the
-#' median reaction time is `ndt + exp(mu)`.
+#' median reaction time is `ndt + exp(mu)`. That holds at `sigmabias = 0`, the
+#' default of `rcogmod_lognormal()`, `dcogmod_lognormal()` and
+#' `pcogmod_lognormal()` and the value to fix in the formula unless the design
+#' can identify a start-point range; see the next section for what a positive
+#' `sigmabias` adds.
+#'
+#' # The start-point range
+#'
+#' The shifted LogNormal is a single-accumulator LBA ([cogmod_lba1()]) with a
+#' LogNormal rather than truncated-Normal rate and no start-point variability:
+#' evidence runs from zero to a threshold at a rate `v ~ LogNormal(-mu, sigma)`,
+#' and the finishing time `1 / v` is `LogNormal(mu, sigma)`. `sigmabias` puts
+#' the start point back. Each trial starts at `z ~ Uniform(0, sigmabias)` and
+#' runs to the threshold `1 + sigmabias`, so the decision time is the LogNormal
+#' multiplied by a `Uniform(1, 1 + sigmabias)` distance:
+#'
+#' ```
+#' T = (1 + sigmabias - z) / v = D * exp(mu + sigma * Z),   D ~ Uniform(1, 1 + sigmabias)
+#' ```
+#'
+#' A Uniform distance compresses the fast tail and blunts the mode without
+#' touching the slow tail, a shape the LogNormal alone cannot produce. The same
+#' accumulator, raced against a second one, is [cogmod_lnr()], whose `nu` is
+#' `-mu`; the two families share their kernels and their `sigmabias`.
+#'
+#' The threshold *offset* above the highest start point is pinned at 1, the
+#' LBA's `boundary` convention with `boundary = 1`. It has to be the threshold
+#' rather than `sigma` that pins the evidence scale: rescaling the evidence axis
+#' shifts the rate's location and scales `sigmabias` and the threshold but
+#' leaves a LogNormal rate's `sigma` untouched, so `sigma = 1` would fix
+#' nothing. `sigmabias` is therefore read in units of that offset: `sigmabias =
+#' 1` says the start point varies over as wide a band as the one above it.
+#'
+#' Estimating `sigmabias` is treacherous in the same way as in [cogmod_lba1()].
+#' As it approaches zero the likelihood goes flat - the model is converging to
+#' the LogNormal and once the range is small enough making it smaller changes
+#' nothing - while the softplus link reaches zero only at minus infinity. Left
+#' flat that is an improper posterior; [cogmod_priors()] fences it. On RT-only
+#' data the range is identified through shape alone, more weakly than in the
+#' race where accuracy helps, and the general density costs about four normal
+#' CDFs where the LogNormal costs one. Fix `sigmabias = 0` in the formula unless
+#' the design speaks to start-point variability; at zero the family computes
+#' exactly what it computed before the parameter existed, at the same cost.
+#'
+#' Neither [cogmod_logstudent()] nor [cogmod_loggamma()] has a `sigmabias`: the
+#' density needs a partial first moment of the rate distribution, which does not
+#' exist for a Student-t on the log scale and needs incomplete gamma functions
+#' for the log-Gamma.
 #'
 #' `ndt` is expressed **directly, in seconds** (through a log link in the `brms`
 #' family). Nothing about it is taken from the data: it is not bounded by the
@@ -45,19 +93,19 @@
 #' 0.25 s - while dying fast enough above that to leave the slow tail alone.
 #' Plot it with `curve(2 * dnorm(x, 0, 0.2), 0, 3)`.
 #'
-#' Up to version 0.2.0 this was a half Student-t with 3 degrees of freedom and
-#' a user-supplied scale. That tail was heavier than every decision density in
-#' the package, so far-out slow responses were eventually better explained by
-#' the outlier component than by the model: at `poutlier = 0.02` a 5 s response
-#' was attributed to it with probability 0.86, and `ndt` was pulled up behind
-#' it. The slow tail now belongs to the decision family, which is what
+#' A heavier-tailed component would not do. A half Student-t with 3 degrees of
+#' freedom, say, has a heavier tail than every decision density in the package,
+#' so far-out slow responses would eventually be better explained by the
+#' outlier component than by the model: at `poutlier = 0.02` a 5 s response
+#' would be attributed to it with probability 0.86, and `ndt` pulled up behind
+#' it. The slow tail belongs to the decision family, which is what
 #' [cogmod_loggamma()]'s `shape` and [cogmod_invgaussian()]'s `sigmadrift` are
 #' for.
 #'
 #' # Reaction times must be in seconds
 #'
 #' The outlier component's scale is a **constant in seconds**, and so are the
-#' priors [cogmod_priors()] supplies - `ndt` at roughly 0.17 to 0.30 s,
+#' priors [cogmod_priors()] supplies - `ndt` centred on 0.30 s,
 #' `sigmandt` in [cogmod_ddm()] at 0.05 s, and so on. There is no argument for
 #' changing the unit, and no unit conversion anywhere in the package.
 #'
@@ -69,11 +117,10 @@
 #' parameterization exists to remove. Nothing errors, and the chains still
 #' initialise, because the decision density itself stays finite.
 #'
-#' This failure was already reachable before 0.2.1 by leaving `minrt` at its
-#' default with millisecond data. Removing the argument makes it unconditional
-#' rather than optional, which is the trade: the equivariance `minrt` bought in
-#' the likelihood was already lost in the priors, and [cogmod_priors()] is not
-#' optional.
+#' A scale argument in the unit of the data would make the likelihood
+#' equivariant to that unit, and there deliberately is none: the equivariance
+#' would be lost again in the priors, which are stated in seconds throughout,
+#' and [cogmod_priors()] is not optional.
 #'
 #' Divide by 1000 before fitting, and multiply `ndt` back afterwards if you
 #' want the answer in milliseconds.
@@ -173,12 +220,27 @@
 #' hand-rolled checks - anything that compares a simulated replicate against the
 #' likelihood should be run on [with_outliers()].
 #'
+#' # Censoring
+#'
+#' `brms`'s `cens()` addition term works on this family, and on every other
+#' RT-only family with a closed-form CDF: `bf(rt | cens(error) ~ ...)` scores a
+#' censored trial with the mixture's survival - `pcogmod_lognormal(lower.tail =
+#' FALSE)` - instead of its density, so an error trial can be kept as a lower
+#' bound on the correct response's time rather than dropped. The full account -
+#' what it is for, what it assumes, and the one check to run before using it -
+#' is in the *Censoring* section of [rcogmod_invgaussian()], where the
+#' construction is the simple censored shifted Wald of Miller et al. (2018).
+#'
 #' @param n Number of observations. If `length(n) > 1`, the length is taken to be
 #'   the number required.
 #' @param mu Mean of the decision time on the log scale (`meanlog`). Can take any
 #'   real value. Range: (-Inf, Inf).
 #' @param sigma SD of the decision time on the log scale (`sdlog`). Must be
 #'   positive. Range: (0, Inf).
+#' @param sigmabias Start-point range, in units of the threshold offset: the
+#'   decision time is the LogNormal multiplied by a `Uniform(1, 1 + sigmabias)`
+#'   distance. Must be non-negative. At `0` (the default) the model is the
+#'   plain shifted LogNormal; see the section on the start-point range.
 #' @param ndt Non-decision time (shift parameter), in seconds. Must be
 #'   non-negative. Represents time for processes such as stimulus encoding and
 #'   response execution. Range: [0, Inf).
@@ -188,7 +250,9 @@
 #' @return `rcogmod_lognormal()` returns a numeric vector of `n` simulated
 #'   reaction times, in seconds. `dcogmod_lognormal()` returns the density at
 #'   each element of `x` - the log density if `log = TRUE` - recycled to the
-#'   length of the longest argument. `cogmod_lognormal()` returns a
+#'   length of the longest argument. `pcogmod_lognormal()` returns the
+#'   cumulative probability at each element of `q`, honouring `lower.tail` and
+#'   `log.p`. `cogmod_lognormal()` returns a
 #'   `brms::custom_family` object, to put on a `brms::bf()` formula.
 #'   `cogmod_lognormal_stanvars()` returns a `brms::stanvars` object holding
 #'   the family's Stan `functions` block, to pass to `brms::brm()`, and
@@ -216,9 +280,9 @@
 #'
 #' @export
 rcogmod_lognormal <- function(n, mu = -0.7, sigma = 0.5, ndt = 0.2,
-                              poutlier = 0) {
+                              sigmabias = 0, poutlier = 0) {
   .rshifted("cogmod_lognormal", n = n, ndt = ndt, poutlier = poutlier,
-            mu = mu, sigma = sigma)
+            mu = mu, sigma = sigma, sigmabias = sigmabias)
 }
 
 
@@ -227,15 +291,34 @@ rcogmod_lognormal <- function(n, mu = -0.7, sigma = 0.5, ndt = 0.2,
 #' @param log Logical; if TRUE, probabilities p are given as log(p).
 #' @export
 dcogmod_lognormal <- function(x, mu = -0.7, sigma = 0.5, ndt = 0.2,
-                              poutlier = 0, log = FALSE) {
+                              sigmabias = 0, poutlier = 0, log = FALSE) {
   .dshifted("cogmod_lognormal", x = x, ndt = ndt, poutlier = poutlier,
-            log = log, mu = mu, sigma = sigma)
+            log = log, mu = mu, sigma = sigma, sigmabias = sigmabias)
 }
 
 
 #' @rdname rcogmod_lognormal
-#' @param link_mu,link_sigma,link_ndt,link_poutlier Link functions for the
-#'   parameters.
+#' @param q Vector of quantiles (reaction times, in seconds).
+#' @param lower.tail Logical; if TRUE (default), probabilities are `P[X <= q]`,
+#'   otherwise `P[X > q]` - the survival, which is what a right-censored
+#'   response contributes to the likelihood (see the *Censoring* section).
+#' @param log.p Logical; if TRUE, probabilities p are given as log(p).
+#' @export
+pcogmod_lognormal <- function(q, mu = -0.7, sigma = 0.5, ndt = 0.2,
+                              sigmabias = 0, poutlier = 0, lower.tail = TRUE,
+                              log.p = FALSE) {
+  .pshifted("cogmod_lognormal", q = q, ndt = ndt, poutlier = poutlier,
+            lower.tail = lower.tail, log.p = log.p, mu = mu, sigma = sigma,
+            sigmabias = sigmabias)
+}
+
+
+#' @rdname rcogmod_lognormal
+#' @param link_mu,link_sigma,link_sigmabias,link_ndt,link_poutlier Link
+#'   functions for the parameters. `sigmabias` is on softplus, so that the
+#'   natural-scale value reaches zero only at minus infinity - see the section
+#'   on the start-point range for why it is best fixed at zero in the formula
+#'   rather than estimated.
 #' @param predict_outliers Logical; whether `posterior_predict()` and
 #'   `posterior_epred()` should include the outlier component. `FALSE` (the
 #'   default in `cogmod_lognormal()`) fixes `poutlier` to zero for prediction, so
@@ -247,23 +330,16 @@ dcogmod_lognormal <- function(x, mu = -0.7, sigma = 0.5, ndt = 0.2,
 cogmod_lognormal <- function(
   link_mu = "identity",
   link_sigma = "softplus",
+  link_sigmabias = "softplus",
   link_ndt = "log",
   link_poutlier = "logit",
   predict_outliers = FALSE
 ) {
-  fam <- brms::custom_family(
-    name = "cogmod_lognormal",
-    dpars = c("mu", "sigma", "ndt", "poutlier"),
-    links = c(link_mu, link_sigma, link_ndt, link_poutlier),
-    lb = c(NA, 0, 0, 0), # sigma > 0, ndt > 0, poutlier >= 0
-    ub = c(NA, NA, NA, 1), # poutlier <= 1
-    type = "real" # Continuous outcome variable (RT)
+  .shifted_family(
+    "cogmod_lognormal",
+    links = c(link_mu, link_sigma, link_sigmabias),
+    predict_outliers = predict_outliers
   )
-  # It rides on the family because that is the only thing brms carries down to
-  # a custom family's prediction methods. See the Details section of
-  # ?rcogmod_lognormal, and with_outliers() for flipping the flag after fitting.
-  fam$predict_outliers <- isTRUE(predict_outliers)
-  fam
 }
 
 

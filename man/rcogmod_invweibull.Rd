@@ -3,6 +3,7 @@
 \name{rcogmod_invweibull}
 \alias{rcogmod_invweibull}
 \alias{dcogmod_invweibull}
+\alias{pcogmod_invweibull}
 \alias{cogmod_invweibull}
 \alias{cogmod_invweibull_lpdf_expose}
 \alias{cogmod_invweibull_stanvars}
@@ -20,6 +21,16 @@ dcogmod_invweibull(
   ndt = 0.2,
   poutlier = 0,
   log = FALSE
+)
+
+pcogmod_invweibull(
+  q,
+  mu = 3,
+  sigma = 0.4,
+  ndt = 0.2,
+  poutlier = 0,
+  lower.tail = TRUE,
+  log.p = FALSE
 )
 
 cogmod_invweibull(
@@ -59,6 +70,14 @@ distribution reduces to the plain shifted LogNormal.}
 \item{x}{Vector of quantiles (observed reaction times).}
 
 \item{log}{Logical; if TRUE, probabilities p are given as log(p).}
+
+\item{q}{Vector of quantiles (reaction times, in seconds).}
+
+\item{lower.tail}{Logical; if TRUE (default), probabilities are \code{P[X <= q]},
+otherwise \code{P[X > q]} - the survival, which is what a right-censored
+response contributes to the likelihood (see the \emph{Censoring} section).}
+
+\item{log.p}{Logical; if TRUE, probabilities p are given as log(p).}
 
 \item{link_mu, link_sigma, link_ndt, link_poutlier}{Link functions for the
 parameters.}
@@ -102,6 +121,7 @@ Functions:
 \itemize{
 \item \code{rcogmod_invweibull()}: Simulates random draws.
 \item \code{dcogmod_invweibull()}: Computes the density (likelihood).
+\item \code{pcogmod_invweibull()}: Computes the cumulative distribution function (CDF) or survival.
 \item \code{cogmod_invweibull()}: Creates a \code{brms::custom_family()}.
 \item \code{cogmod_invweibull_stanvars()}: Generates the \code{stanvars} to pass to \code{brm()}.
 }
@@ -115,7 +135,7 @@ only for \code{mu > 1}.
 and \code{\link[=with_outliers]{with_outliers()}}, \code{\link[=without_outliers]{without_outliers()}}, \code{\link[=p_outlier]{p_outlier()}} and
 \code{\link[=cogmod_priors]{cogmod_priors()}} all work here too. See \code{?rcogmod_lognormal} for why \code{ndt} is
 expressed directly in seconds rather than as a fraction of the fastest
-observed response, what the half Student-t outlier component is for, and why
+observed response, what the half Normal outlier component is for, and why
 the outlier component's scale is a constant rather than a \code{dpar}, and why
 reaction times have to be in seconds.
 

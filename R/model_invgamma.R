@@ -9,6 +9,7 @@
 #' Functions:
 #' - `rcogmod_invgamma()`: Simulates random draws.
 #' - `dcogmod_invgamma()`: Computes the density (likelihood).
+#' - `pcogmod_invgamma()`: Computes the cumulative distribution function (CDF) or survival.
 #' - `cogmod_invgamma()`: Creates a `brms::custom_family()`.
 #' - `cogmod_invgamma_stanvars()`: Generates the `stanvars` to pass to `brm()`.
 #'
@@ -20,7 +21,7 @@
 #' and [with_outliers()], [without_outliers()], [p_outlier()] and
 #' [cogmod_priors()] all work here too. See `?rcogmod_lognormal` for why `ndt` is
 #' expressed directly in seconds rather than as a fraction of the fastest
-#' observed response, what the half Student-t outlier component is for, and why
+#' observed response, what the half Normal outlier component is for, and why
 #' the outlier component's scale is a constant rather than a `dpar`, and why
 #' reaction times have to be in seconds.
 #'
@@ -74,6 +75,15 @@ dcogmod_invgamma <- function(x, mu = 4, sigma = 1.5, ndt = 0.2, poutlier = 0,
                       log = FALSE) {
   .dshifted("cogmod_invgamma", x = x, ndt = ndt, poutlier = poutlier,
                log = log, mu = mu, sigma = sigma)
+}
+
+
+#' @rdname rcogmod_invgamma
+#' @export
+pcogmod_invgamma <- function(q, mu = 4, sigma = 1.5, ndt = 0.2, poutlier = 0,
+                             lower.tail = TRUE, log.p = FALSE) {
+  .pshifted("cogmod_invgamma", q = q, ndt = ndt, poutlier = poutlier,
+            lower.tail = lower.tail, log.p = log.p, mu = mu, sigma = sigma)
 }
 
 

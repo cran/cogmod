@@ -15,12 +15,16 @@
 #
 # or export it in the environment before starting R.
 #
-# Note what this does *not* change: these tests also need cmdstanr, and the
-# R-CMD-check workflow deliberately uninstalls it (see the "Remove cmdstanr"
-# step), so they have always been local-only. `COGMOD_TEST_SLOW` is set there
-# too, so that a CI job which does provide CmdStan runs them without any further
-# change - but on the current workflow they still skip for want of cmdstanr, one
-# line earlier than before.
+# Note what this does *not* change: these tests also need cmdstanr. Four of the
+# five R-CMD-check jobs uninstall it (see the "Remove cmdstanr" step), so there
+# they skip one line earlier than this, for want of the package rather than for
+# want of the flag. The fifth job does carry CmdStan - which is what gets the
+# R-versus-Stan density comparisons run on CI, through the single shared
+# compilation in helper-stan.R - but `COGMOD_TEST_SLOW` is off there too by
+# default, because these nine each compile a program of their own and that is
+# the difference between a few minutes and the better part of an hour. Run them
+# on CI deliberately: Actions -> R-CMD-check -> Run workflow -> tick
+# "slow_tests".
 skip_if_not_slow <- function() {
   # as.logical() alone would make COGMOD_TEST_SLOW=1 mean "no", which is not
   # what anyone typing it intends.

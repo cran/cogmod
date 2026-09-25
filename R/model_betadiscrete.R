@@ -357,14 +357,14 @@ real cogmod_betadiscrete_lpmf(int y, real mu, real phi, real pzero, int k) {
 
 #' @rdname rcogmod_betadiscrete
 #' @examples
-#' \donttest{
-#' # Exposing the Stan function needs cmdstanr and a CmdStan toolchain,
-#' # which live outside CRAN - see the package website to install them.
-#' if (requireNamespace("cmdstanr", quietly = TRUE) &&
-#'     !is.null(cmdstanr::cmdstan_version(error_on_NA = FALSE))) {
-#'   lpmf <- cogmod_betadiscrete_lpmf_expose()
-#'   lpmf(y = 7, mu = 0.66, phi = 3.51, pzero = 0, k = 10)
-#' }
+#' \dontrun{
+#' # Needs cmdstanr and a CmdStan toolchain, which live outside CRAN - see the
+#' # package website to install them. Not run under R CMD check, which executes
+#' # every example in one R session: once brms has fitted a model there (the
+#' # cogmod_inits() and p_outlier() examples do), rstan is live in the process
+#' # and loading an exposed Stan function next to it segfaults on Linux.
+#' lpmf <- cogmod_betadiscrete_lpmf_expose()
+#' lpmf(y = 7, mu = 0.66, phi = 3.51, pzero = 0, k = 10)
 #' }
 #'
 #' @export

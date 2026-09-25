@@ -3,6 +3,7 @@
 \name{rcogmod_exgaussian}
 \alias{rcogmod_exgaussian}
 \alias{dcogmod_exgaussian}
+\alias{pcogmod_exgaussian}
 \alias{cogmod_exgaussian}
 \alias{cogmod_exgaussian_lpdf_expose}
 \alias{cogmod_exgaussian_stanvars}
@@ -14,6 +15,15 @@
 rcogmod_exgaussian(n, mu = 0.5, sigma = 0.1, tau = 0.2)
 
 dcogmod_exgaussian(x, mu = 0.5, sigma = 0.1, tau = 0.2, log = FALSE)
+
+pcogmod_exgaussian(
+  q,
+  mu = 0.5,
+  sigma = 0.1,
+  tau = 0.2,
+  lower.tail = TRUE,
+  log.p = FALSE
+)
 
 cogmod_exgaussian(
   link_mu = "identity",
@@ -45,6 +55,15 @@ scale - though for RT data it is normally positive. Range: (-Inf, Inf).}
 
 \item{log}{Logical; if TRUE, probabilities p are given as log(p).}
 
+\item{q}{Vector of quantiles (reaction times, in seconds).}
+
+\item{lower.tail}{Logical; if TRUE (default), probabilities are \code{P[X <= q]},
+otherwise \code{P[X > q]} - the survival, which is what a right-censored
+response contributes to the likelihood under \code{brms::bf(rt | cens(x) ~ ...)}.
+See the \emph{Censoring} section of \code{\link[=rcogmod_invgaussian]{rcogmod_invgaussian()}}.}
+
+\item{log.p}{Logical; if TRUE, probabilities p are given as log(p).}
+
 \item{link_mu, link_sigma, link_tau}{Character of the type of link used to
 model the ex-Gaussian parameters. Defaults to \code{"identity"} for \code{mu} and
 \code{"softplus"} for \code{sigma} and \code{tau} (see Details).}
@@ -57,7 +76,9 @@ model the ex-Gaussian parameters. Defaults to \code{"identity"} for \code{mu} an
 \code{rcogmod_exgaussian()} returns a numeric vector of \code{n} simulated
 reaction times, in seconds. \code{dcogmod_exgaussian()} returns the density at
 each element of \code{x} - the log density if \code{log = TRUE} - recycled to the
-length of the longest argument. \code{cogmod_exgaussian()} returns a
+length of the longest argument. \code{pcogmod_exgaussian()} returns the
+cumulative probability at each element of \code{q}, honouring \code{lower.tail} and
+\code{log.p}. \code{cogmod_exgaussian()} returns a
 \code{brms::custom_family} object, to put on a \code{brms::bf()} formula.
 \code{cogmod_exgaussian_stanvars()} returns a \code{brms::stanvars} object holding
 the family's Stan \code{functions} block, to pass to \code{brms::brm()}, and
@@ -84,6 +105,7 @@ Functions:
 \itemize{
 \item \code{rcogmod_exgaussian()}: Simulates random draws from the Ex-Gaussian distribution.
 \item \code{dcogmod_exgaussian()}: Computes the density (likelihood) of the Ex-Gaussian distribution.
+\item \code{pcogmod_exgaussian()}: Computes the cumulative distribution function (CDF) or survival.
 \item \code{cogmod_exgaussian()}: Creates a \code{brms::custom_family()} for use in \code{brms} models.
 }
 }

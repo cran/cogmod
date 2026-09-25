@@ -75,6 +75,11 @@
 #' is the log of has its own shape `k = 1 / shape^2`. Throughout the docs below,
 #' "shape" unqualified means this parameter, never `k`.
 #'
+#' The family has no `sigmabias`: the start-point range of [cogmod_lognormal()]
+#' needs a partial first moment of the rate distribution, which for a log-Gamma
+#' exists only on part of the `shape` range and needs incomplete gamma
+#' functions, so it is left to the LogNormal (and to [cogmod_lnr()]).
+#'
 #' It is unconstrained, with `shape = 0` in the *interior* rather than at a
 #' boundary, which is what makes it usable as a free parameter:
 #'

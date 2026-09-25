@@ -268,11 +268,11 @@ family). Nothing about it is taken from the data: it is not bounded by the
 fastest observed response, so a non-decision time that varies by condition or
 by participant can exceed the sample minimum wherever the data support it.
 
-This replaces the earlier \code{tau} / \code{minrt} pair, in which \code{ndt = tau * minrt}
-with \code{minrt} set to the fastest observed RT. That capped the non-decision
-time at an order statistic of the sample, so any condition or participant
-whose true \code{ndt} exceeded the fastest observed response was inexpressible,
-and the misfit surfaced as spurious effects on the race parameters.
+Tying \code{ndt} to the fastest observed response would cap it at an order
+statistic of the sample, so any condition or participant whose true \code{ndt}
+exceeded that response would be inexpressible, and the misfit would surface
+as spurious effects on the race parameters. Expressing it directly is what
+avoids that.
 }
 
 \section{The outlier component}{
@@ -291,10 +291,11 @@ options, and the RT is a \strong{half Normal} with scale \code{0.2} seconds.
 \deqn{f(t, k) = p \frac{1}{K} g(t) + (1 - p) f_k(t - ndt)}
 
 The \code{1 / K} is what keeps the total summing to one over the response options;
-without it it would come to \code{1 + poutlier}. The half-t is used for the timing
-because it is \strong{flat at the origin} (zero derivative), so the very fastest
-responses - the ones least plausibly decisions - are not starved of density,
-and because its tails are heavy enough to cover the whole plausible RT range.
+without it it would come to \code{1 + poutlier}. The half Normal is used for the
+timing because it is \strong{flat at the origin} (zero derivative), so the very
+fastest responses - the ones least plausibly decisions - are not starved of
+density, and because it dies fast enough above that range to leave the slow
+tail to the race itself rather than claiming it.
 
 \code{poutlier} is a \emph{rate}, not a classification: the model never labels
 individual trials, it estimates what share of them came from elsewhere. Use
@@ -304,8 +305,7 @@ individual trials, it estimates what share of them came from elsewhere. Use
 \section{Reaction times must be in seconds}{
 The outlier component's scale is a constant in seconds, and so are the
 priors \code{\link[=cogmod_priors]{cogmod_priors()}} supplies. There is no argument for changing the
-unit: the \code{minrt} argument that used to rescale the component was removed in
-0.2.1. Millisecond data fails silently rather than loudly - the outlier
+unit. Millisecond data fails silently rather than loudly - the outlier
 component contributes nothing and the min-RT boundary comes back. See the
 corresponding section of \code{\link[=cogmod_lognormal]{cogmod_lognormal()}} for the full account, which
 applies unchanged here.
@@ -332,7 +332,14 @@ non-negative for the accumulator to be a proper first passage time.
 Use \code{\link[=cogmod_inits]{cogmod_inits()}} rather than \code{init = 0}. \code{brms} initialises on the
 unconstrained scale, so \code{init = 0} puts \code{ndt} at \code{exp(0) = 1} second - above
 nearly every sub-second RT, which leaves every response attributed to the
-outlier component and the race parameters with no gradient at all.
+outlier component and the race parameters with no gradient at all. It also
+starts \code{driftone} at a third of \code{mu}'s drift rather than equal to it: a
+Wald density is thin on the fast side and flat on the slow side, so an
+error accumulator started too fast sits hundreds of log-density units above
+the posterior, and a cold chain's first trajectory can convert that into a
+run down the flat \code{driftone} direction from which it never returns. On the
+benchmark data of the \href{https://dominiquemakowski.github.io/cogmod/articles/performance.html}{performance article} that froze one chain in four;
+the slower start removed it.
 
 \code{\link[=cogmod_priors]{cogmod_priors()}} is not a convenience here either. Beyond \code{ndt} and
 \code{poutlier}, \code{sigmabias} and \code{boundary} are only weakly identified from each
@@ -388,17 +395,17 @@ sapply(0:1, function(k) {
   )
 })
 
-\donttest{
-# Exposing the Stan function needs cmdstanr and a CmdStan toolchain,
-# which live outside CRAN - see the package website to install them.
-if (requireNamespace("cmdstanr", quietly = TRUE) &&
-    !is.null(cmdstanr::cmdstan_version(error_on_NA = FALSE))) {
-  lpdf <- cogmod_rdm_lpdf_expose()
-  lpdf(
-    Y = 0.5, mu = 2, driftone = 1.5, sigmabias = 0.2, boundary = 0.5,
-    ndt = 0.2, poutlier = 0.02, dec = 0
-  )
-}
+\dontrun{
+# Needs cmdstanr and a CmdStan toolchain, which live outside CRAN - see the
+# package website to install them. Not run under R CMD check, which executes
+# every example in one R session: once brms has fitted a model there (the
+# cogmod_inits() and p_outlier() examples do), rstan is live in the process
+# and loading an exposed Stan function next to it segfaults on Linux.
+lpdf <- cogmod_rdm_lpdf_expose()
+lpdf(
+  Y = 0.5, mu = 2, driftone = 1.5, sigmabias = 0.2, boundary = 0.5,
+  ndt = 0.2, poutlier = 0.02, dec = 0
+)
 }
 
 }

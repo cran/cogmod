@@ -41,6 +41,7 @@ make_prep <- function(y, dec, drift, boundary, bias, ndt, poutlier,
 # dcogmod_ddm -------------------------------------------------------------
 
 test_that("dcogmod_ddm matches the mixture density", {
+  skip_if_not_installed("RWiener") # brms::dwiener() calls it
   pars <- list(drift = 0.5, boundary = 1, bias = 0.4, ndt = 0.2)
   for (poutlier in c(0, 0.02, 0.4)) {
     for (response in 0:1) {
@@ -127,6 +128,7 @@ test_that("poutlier = 0 recovers the plain shifted diffusion", {
 
 
 test_that("the tau0 offset is exactly that: an offset", {
+  skip_if_not_installed("RWiener") # brms::dwiener() calls it
   # brms::dwiener() refuses a zero non-decision time, but the density depends on
   # the time and the non-decision time only through their difference, so the
   # decision component is evaluated at (t + tau0, tau0). This checks that the
@@ -184,6 +186,55 @@ test_that("the variability parameters are legitimately zero", {
 })
 
 
+test_that("the st0 quadrature resolves a range that reaches fast decision times", {
+  # rtdists issue #28, reproduced here before the fix: when the st0 range
+  # covers decision times from about zero up to `t`, the integrand over the
+  # non-decision time holds the whole early peak of the first-passage density
+  # inside a sliver of the range, and a fixed 25-node rule on the plain time
+  # scale missed it by up to 3% on the sweep below. The rule now runs over log
+  # decision time from where the density is dead, and these are the cases that
+  # broke the old one, checked against the same rule at 400 nodes (which agrees
+  # with 800 and 1600 nodes to 1e-12).
+  ldens <- function(t, w, st0, sw, response = 0, sv = 0, nodes = 25) {
+    n <- max(length(t), length(w), length(st0), length(sw), length(response))
+    pars <- list(
+      t = rep_len(t, n), drift = rep_len(0.5, n), boundary = rep_len(0.5, n),
+      bias = rep_len(w, n), response = rep_len(response, n),
+      sigmadrift = rep_len(sv, n), sigmabias = rep_len(sw, n),
+      sigmandt = rep_len(st0, n)
+    )
+    cogmod:::.ddm_ldens_var(pars, nodes = nodes)
+  }
+  relerr <- function(x, ref) abs(exp(x - ref) - 1)
+
+  # the issue's own examples: start point near the responding boundary, and
+  # the st0 range reaching down to zero decision time (the old rule was out by
+  # 5.5e-4, 5.7e-3, 6e-6, 5.5e-4 and 6e-7 on these, in order)
+  hard <- list(
+    list(t = 0.16, w = 0.3, st0 = 0.16, sw = 0),
+    list(t = 0.16, w = 0.3, st0 = 0.16, sw = 0.5),
+    list(t = 0.16, w = 0.3, st0 = 0.16, sw = 0, response = 1),
+    list(t = 0.16, w = 0.3, st0 = 0.16, sw = 0, sv = 0.3),
+    list(t = 0.025, w = 0.3, st0 = 0.1, sw = 0)
+  )
+  for (h in hard) {
+    expect_lt(relerr(do.call(ldens, h), do.call(ldens, c(h, nodes = 400))),
+              1e-9)
+  }
+
+  # the sweep: 120 cells, half of them with the range reaching zero
+  g <- expand.grid(w = c(0.1, 0.2, 0.3, 0.5), st0 = c(0.05, 0.1, 0.2),
+                   sw = c(0, 0.5), t = c(0.02, 0.05, 0.1, 0.2, 0.5))
+  e <- relerr(ldens(g$t, g$w, g$st0, g$sw), ldens(g$t, g$w, g$st0, g$sw, nodes = 400))
+  expect_lt(max(e), 1e-8)
+
+  # and through the public density, with the range placed by `ndt`
+  d <- dcogmod_ddm(0.46, drift = 0.5, boundary = 0.5, bias = 0.3, ndt = 0.3,
+                   response = 0, sigmabias = 0.5, sigmandt = 0.16, log = TRUE)
+  expect_equal(d, ldens(0.16, 0.3, 0.16, 0.5, nodes = 400), tolerance = 1e-9)
+})
+
+
 # rcogmod_ddm -------------------------------------------------------------
 
 test_that("rcogmod_ddm returns rt and response", {
@@ -209,7 +260,7 @@ test_that("pcogmod_ddm integrates dcogmod_ddm", {
   grid <- covering_grid(
     drift = c(-3, -1, 0, 1, 3),
     boundary = c(0.6, 1.2, 2.0),
-    bias = c(0.3, 0.5, 0.7),
+    bias = c(0.05, 0.3, 0.5, 0.7, 0.95),
     q = c(0.35, 0.6, 1.2, 3),
     response = c(0L, 1L)
   )
@@ -251,6 +302,55 @@ test_that("pcogmod_ddm behaves like a CDF", {
   # The between-trial variability parameters would each need a quadrature layer,
   # so they are not arguments at all rather than being silently ignored.
   expect_error(pcogmod_ddm(1, sigmadrift = 0.5))
+})
+
+
+test_that("pcogmod_ddm stays a CDF with the start point against a boundary", {
+  # rtdists's pdiffusion() was non-monotone for a start point near either
+  # boundary until rtdists/rtdists@7dab07c: its PDE solver initialised the
+  # grid with one boundary condition and interpolated against another. This
+  # is a series, not a solver, so that mechanism is absent - but the grids
+  # above stop at bias 0.05 and 0.95, and the series' term count and time
+  # floor both depend on the start point, so the edges get asked directly.
+  q <- seq(0.2, 4, by = 0.005)
+  for (w in c(0.01, 0.02, 0.98, 0.99)) {
+    info <- sprintf("bias %.2f", w)
+    ps <- lapply(0:1, function(k) {
+      pcogmod_ddm(q, drift = 0.5, boundary = 1, bias = w, ndt = 0.2,
+                  response = k, poutlier = 0)
+    })
+    for (k in 0:1) {
+      p <- ps[[k + 1]]
+      pk <- pcogmod_ddm(Inf, drift = 0.5, boundary = 1, bias = w, ndt = 0.2,
+                        response = k, poutlier = 0)
+      expect_true(all(is.finite(p)), info = info)
+      expect_false(is.unsorted(p), info = info)
+      expect_true(all(p >= 0 & p <= pk), info = info)
+    }
+    # The two defective CDFs partition the marginal one, here as everywhere.
+    expect_equal(ps[[1]] + ps[[2]],
+                 pcogmod_ddm(q, drift = 0.5, boundary = 1, bias = w, ndt = 0.2,
+                             poutlier = 0),
+                 info = info)
+    # And each is still the integral of its density, minority response
+    # included - which is where the mass is smallest and a series is most
+    # likely to be short a term.
+    for (k in 0:1) {
+      for (qq in c(0.35, 0.8, 2)) {
+        integrated <- stats::integrate(
+          function(t) dcogmod_ddm(t, drift = 0.5, boundary = 1, bias = w,
+                                  ndt = 0.2, response = k, poutlier = 0),
+          0, qq, rel.tol = 1e-11, subdivisions = 2000
+        )$value
+        expect_equal(
+          pcogmod_ddm(qq, drift = 0.5, boundary = 1, bias = w, ndt = 0.2,
+                      response = k, poutlier = 0),
+          integrated, tolerance = 1e-8,
+          info = sprintf("%s response %d q %.2f", info, k, qq)
+        )
+      }
+    }
+  }
 })
 
 
@@ -354,6 +454,81 @@ test_that("rcogmod_ddm produces responses below ndt only via outliers", {
   fast <- sim$response[sim$rt < 0.02]
   expect_setequal(unique(fast), c(0, 1))
   expect_equal(mean(fast == 0), 0.5, tolerance = 0.1)
+})
+
+
+test_that("every DDM draw lands on its target quantile of the CDF", {
+  # Each draw is the inversion of the defective CDF at a uniform, so pushing it
+  # back through `.ddm_cdf_lower()` must return that uniform. This is exact,
+  # per draw, where the distributional tests above are statistical: it is what
+  # caught the sampler returning a 30 s response for a 3 ms one when Newton
+  # declared convergence on a step size alone, about once in 10,000 draws at
+  # a short boundary and an extreme start point.
+  #
+  # The sampler consumes two runif(n) in this order: the response, then the
+  # quantile. The response check makes this test fail loudly, rather than pass
+  # vacuously, if that ever changes.
+  n <- 20000
+  for (g in list(c(v = 1, a = 0.5, w = 0.1), c(v = -3, a = 0.5, w = 0.1),
+                 c(v = 0.5, a = 1, w = 0.5), c(v = 4, a = 3, w = 0.9),
+                 c(v = 0, a = 2, w = 0.3))) {
+    v <- rep(g[["v"]], n); a <- rep(g[["a"]], n); w <- rep(g[["w"]], n)
+    set.seed(35)
+    u <- stats::runif(n)
+    q <- stats::runif(n)
+    set.seed(35)
+    sim <- .ddm_fpt_rng(n, v, a, w)
+    lower <- sim$response == 0
+    expect_identical(lower, u < .ddm_plower(v, a, w))
+    expect_true(all(is.finite(sim$rt) & sim$rt > 0))
+    vf <- ifelse(lower, v, -v)
+    wf <- ifelse(lower, w, 1 - w)
+    pf <- .ddm_plower(vf, a, wf)
+    surv <- pf - .ddm_cdf_lower(sim$rt, vf, a, wf)
+    expect_lt(max(abs(surv - (1 - q) * pf) / pf), 1e-9,
+              label = sprintf("worst quantile error at v %.1f a %.1f w %.1f",
+                              g[["v"]], g[["a"]], g[["w"]]))
+  }
+})
+
+
+test_that("posterior_predict_cogmod_ddm takes a vector of observations", {
+  # A hand-built brmsprep, shaped as brms::posterior_predict() has it by the
+  # time the family method is called: every dpar already a draws x observations
+  # matrix (or a scalar, for one fixed in the formula). That is all
+  # brms::get_dpar() needs, and it keeps a model fit out of this test.
+  set.seed(11)
+  ndraws <- 20; nobs <- 7
+  prep <- structure(list(
+    dpars = list(
+      mu = matrix(rnorm(ndraws * nobs, 1, 0.5), ndraws, nobs),
+      boundary = matrix(runif(ndraws * nobs, 0.8, 2), ndraws, nobs),
+      bias = matrix(runif(ndraws * nobs, 0.3, 0.7), ndraws, nobs),
+      sigmadrift = 0, sigmabias = 0, sigmandt = 0,
+      # distinct per observation, so the layout of the stacked output shows
+      ndt = matrix(rep(seq(0.1, 0.7, by = 0.1), each = ndraws), ndraws, nobs),
+      poutlier = matrix(0.02, ndraws, nobs)
+    ),
+    family = cogmod_ddm(), nobs = nobs, ndraws = ndraws
+  ), class = "brmsprep")
+
+  one <- posterior_predict_cogmod_ddm(3, prep)
+  expect_equal(dim(one), c(ndraws, 2))
+  expect_true(all(one[, 1] > 0.3))          # ndt of observation 3
+
+  idx <- c(2, 5, 7)
+  many <- posterior_predict_cogmod_ddm(idx, prep)
+  expect_equal(dim(many), c(ndraws * length(idx), 2))
+  expect_true(all(many[, 2] %in% c(0, 1)))
+  # draws for i[1] first, then i[2], ...: each block sits above its own ndt
+  blocks <- split(many[, 1], rep(idx, each = ndraws))
+  for (k in idx) expect_gt(min(blocks[[as.character(k)]]), k / 10)
+  # the outlier component is off by default and on when asked
+  expect_true(all(many[, 1] > 0.2))
+  set.seed(12)
+  with_out <- posterior_predict_cogmod_ddm(rep(idx, 40), prep,
+                                           predict_outliers = TRUE)
+  expect_true(any(with_out[, 1] < 0.2))
 })
 
 
@@ -508,8 +683,12 @@ test_that("stanvars carry the likelihood with the outlier component", {
   expect_true(grepl("wiener_lpdf\\(y \\| boundary, tau0, w, v\\)", code))
   expect_true(grepl("wiener_lpdf\\(y \\| boundary, tau0, w, v, sigmadrift\\)",
                     code))
+  # ...and the 7-parameter one carries the package's tolerance, not Stan's
+  # default: it is generated from .DDM_WIENER_PRECISION, so check that number
   expect_true(grepl(
-    "wiener_lpdf\\(y \\| boundary, tau0, w, v, sigmadrift, sw, sigmandt\\)",
+    sprintf("wiener_lpdf\\(y \\| boundary, tau0, w, v, sigmadrift, sw, sigmandt, %s\\)",
+            formatC(cogmod:::.DDM_WIENER_PRECISION, format = "g", digits = 17,
+                    width = 1)),
     code
   ))
   # the old parameterization is gone
@@ -538,7 +717,7 @@ test_that("Stan cogmod_ddm_lpdf matches dcogmod_ddm", {
     Y = c(0.02, 0.25, 0.5, 1.2, 4),
     mu = c(-1.5, 0, 0.8),
     boundary = c(0.6, 1.2, 2),
-    bias = c(0.3, 0.5, 0.7),
+    bias = c(0.05, 0.3, 0.5, 0.7, 0.95),
     sigmadrift = c(0, 0.8),
     sigmabias = c(0, 0.5),
     sigmandt = c(0, 0.08),
@@ -551,8 +730,16 @@ test_that("Stan cogmod_ddm_lpdf matches dcogmod_ddm", {
       g$boundary == 1.2 & g$bias == 0.5 & g$ndt == 0.15 & g$poutlier == 0.001
     }
   )
-  for (i in seq_len(nrow(grid))) {
-    g <- grid[i, ]
+  # The regime of rtdists issue #28 - the st0 range reaching down to fast
+  # decision times, the start point near the responding boundary - where the R
+  # side used to be out by up to 3%. Every cell is in the 7-parameter branch.
+  hard <- expand.grid(
+    Y = 0.1 + c(0.025, 0.16, 0.2), mu = 0.5, boundary = 0.5, bias = c(0.1, 0.3),
+    sigmadrift = c(0, 0.3), sigmabias = c(0, 0.5), sigmandt = c(0.16, 0.2),
+    ndt = 0.1, poutlier = 0.01, dec = 0:1
+  )
+  for (i in seq_len(nrow(grid) + nrow(hard))) {
+    g <- if (i <= nrow(grid)) grid[i, ] else hard[i - nrow(grid), ]
     stan <- lpdf(g$Y, g$mu, g$boundary, g$bias, g$sigmadrift, g$sigmabias,
                  g$sigmandt, g$ndt, g$poutlier, as.integer(g$dec))
     r <- dcogmod_ddm(g$Y, g$mu, g$boundary, g$bias, g$ndt, response = g$dec,
@@ -564,8 +751,11 @@ test_that("Stan cogmod_ddm_lpdf matches dcogmod_ddm", {
       # Relative, not absolute. The floor is looser than the closed-form
       # families manage because the 7-parameter branch is adaptive quadrature on
       # the Stan side and fixed-node Gauss-Legendre on the R side: the two
-      # integrate the same function by different rules.
-      expect_lt(abs(stan - r) / max(1, abs(r)), 1e-4)
+      # integrate the same function by different rules. The R side agrees with
+      # itself at 400 nodes to 1e-9 on every cell here (see the quadrature test
+      # above), and the worst cells sit at 2e-6, which is Stan's own stopping
+      # tolerance - so this is as tight as the comparison can be made.
+      expect_lt(abs(stan - r) / max(1, abs(r)), 1e-5)
     }
   }
 
@@ -597,14 +787,14 @@ test_that("cogmod_priors fills ndt and poutlier for cogmod_ddm", {
                        poutlier ~ 1, family = cogmod_ddm())
   p <- cogmod_priors(modelled, d)
   expect_true(any(p$dpar == "ndt" & p$class == "Intercept" &
-                    p$prior == "normal(-1.2, 0.2)"))
+                    p$prior == "normal(-1.2, 0.5)"))
   expect_true(any(p$dpar == "poutlier" & p$class == "Intercept" &
                     p$prior == "normal(-5, 1)"))
 
   omitted <- brms::bf(RT | dec(Error) ~ 1, family = cogmod_ddm())
   p2 <- cogmod_priors(omitted, d)
   expect_false(any(grepl("uniform", p2$prior)))
-  expect_true(any(p2$class == "ndt" & p2$prior == "lognormal(-1.2, 0.2)"))
+  expect_true(any(p2$class == "ndt" & p2$prior == "lognormal(-1.2, 0.5)"))
   expect_true(any(p2$class == "poutlier" & p2$prior == "exponential(100)"))
 
   mixed <- brms::bf(RT | dec(Error) ~ Condition + (1 | id), ndt ~ Condition,

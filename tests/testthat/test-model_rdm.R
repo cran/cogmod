@@ -746,6 +746,49 @@ test_that("a start-point range of exactly zero is the plain Wald", {
 })
 
 
+test_that("a mixed vector of ranges and drifts takes each branch it needs", {
+  # The Wald kernels branch twice, element by element: below .RDM_EPS_A the
+  # start-point range is folded into the threshold, and below .RDM_EPS_V the
+  # drift takes the driftless form. One vectorised call can therefore run
+  # three branches at once, and each branch subsets the parameters by its own
+  # mask. rtdists's lognormal and gamma LBAs had the same shape and, until
+  # rtdists/rtdists#24, indexed one branch by another's mask - right whenever
+  # a call was all one kind, wrong the moment it was mixed, and invisible to
+  # tests that swept one value at a time, which is what the tests above do.
+  A <- c(0, 1e-8, 1e-5, 0.2, 0.5, 0.3, 1e-6)
+  v0 <- c(2, 2, 0, 2, 1e-8, 3, 0)
+  v1 <- c(1, 0, 1.5, 1, 1, 1e-8, 2)
+  t <- c(0.45, 0.6, 0.9, 0.5, 0.7, 1.1, 0.8)
+  ndt <- c(0.2, 0.3, 0.1, 0.25, 0.2, 0.15, 0.3)
+  k <- c(0L, 1L, 0L, 1L, 1L, 0L, 1L)
+
+  each <- function(f) {
+    vapply(seq_along(A), function(i) {
+      f(t[i], vzero = v0[i], vone = v1[i], bias = A[i], boundary = 0.5,
+        ndt = ndt[i], response = k[i], poutlier = 0.02)
+    }, numeric(1))
+  }
+  d <- dcogmod_rdm(t, vzero = v0, vone = v1, bias = A, boundary = 0.5,
+                   ndt = ndt, response = k, poutlier = 0.02)
+  expect_identical(d, each(dcogmod_rdm))
+  expect_true(all(is.finite(d) & d > 0))
+  p <- pcogmod_rdm(t, vzero = v0, vone = v1, bias = A, boundary = 0.5,
+                   ndt = ndt, response = k, poutlier = 0.02)
+  expect_identical(p, each(pcogmod_rdm))
+  expect_true(all(is.finite(p) & p > 0 & p < 1))
+
+  # And every branch shifts with ndt: the second rtdists bug was a small
+  # branch that forgot to subtract t0.
+  expect_equal(
+    dcogmod_rdm(t + 0.1, vzero = v0, vone = v1, bias = A, boundary = 0.5,
+                ndt = ndt + 0.1, response = k, poutlier = 0),
+    dcogmod_rdm(t, vzero = v0, vone = v1, bias = A, boundary = 0.5,
+                ndt = ndt, response = k, poutlier = 0),
+    tolerance = 1e-12
+  )
+})
+
+
 test_that("the Wald density integrates to one across the parameter grid", {
   for (prm in list(c(3, 0.5, 0.2), c(1, 1, 0.5), c(0.5, 2, 0.1),
                    c(6, 0.3, 0.05), c(0, 1, 0.3))) {
@@ -1006,7 +1049,7 @@ test_that("cogmod_priors fills ndt and poutlier for cogmod_rdm", {
                        family = cogmod_rdm())
   p <- cogmod_priors(modelled, d)
   expect_true(any(p$dpar == "ndt" & p$class == "Intercept" &
-                    p$prior == "normal(-1.2, 0.2)"))
+                    p$prior == "normal(-1.2, 0.5)"))
   expect_true(any(p$dpar == "poutlier" & p$class == "Intercept" &
                     p$prior == "normal(-5, 1)"))
 
@@ -1020,7 +1063,7 @@ test_that("cogmod_priors fills ndt and poutlier for cogmod_rdm", {
                                         family = cogmod_rdm())$prior)))
   p2 <- cogmod_priors(omitted, d)
   expect_false(any(grepl("uniform", p2$prior)))
-  expect_true(any(p2$class == "ndt" & p2$prior == "lognormal(-1.2, 0.2)"))
+  expect_true(any(p2$class == "ndt" & p2$prior == "lognormal(-1.2, 0.5)"))
   expect_true(any(p2$class == "poutlier" & p2$prior == "exponential(100)"))
 
   # and a mixed formula with group-level terms still builds a Stan program
@@ -1119,7 +1162,11 @@ test_that("cogmod_inits covers the declared parameters", {
   # and the race parameters start somewhere a race could plausibly be
   expect_equal(log1p(exp(v0$Intercept_sigmabias)), 0.3, tolerance = 1e-8)
   expect_equal(log1p(exp(v0$Intercept_boundary)), 0.5, tolerance = 1e-8)
-  expect_equal(log1p(exp(v0$Intercept_driftone)), 3, tolerance = 1e-8)
+  # the error accumulator starts slower than the correct one: a start that is
+  # too fast costs hundreds of log-density units and sent cold chains down the
+  # driftone plateau in the first transition (see the registry entry)
+  expect_equal(log1p(exp(v0$Intercept)), 3, tolerance = 1e-8)
+  expect_equal(log1p(exp(v0$Intercept_driftone)), 1, tolerance = 1e-8)
 })
 
 
@@ -1170,4 +1217,65 @@ test_that("cogmod_rdm recovers ndt above the fastest observed response", {
 
   expect_true(with_outliers(fit)$family$predict_outliers)
   expect_false(without_outliers(fit)$family$predict_outliers)
+})
+
+
+test_that("the Stan gradient stays finite for responses a hair above ndt", {
+  # Regression test. The value of cogmod_rdm_lpdf was always finite here (the
+  # test above checks that), but its gradient was not: within about half a
+  # millisecond above the non-decision time both normal CDFs in the survival's
+  # reflection term round to exactly 1, and their difference was formed as
+  # log_diff_exp(0, 0), whose reverse-mode adjoint is 0 / 0. Every parameter's
+  # gradient came out NaN, Stan flagged the transition as divergent, and with
+  # `ndt` a few milliseconds below the fastest responses that happened on most
+  # trajectories: 60% divergent transitions on a posterior that was otherwise
+  # healthy. Only the gradient sees it, so only a compiled model with model
+  # methods can test it - hence the slow gate; `stan_fun()` exposes values only.
+  skip_if_not_slow()
+  skip_on_cran()
+  skip_if_not_installed("cmdstanr")
+
+  code <- paste0(
+    "functions {\n", .cogmod_rdm_lpdf(), "}\n",
+    "data { int N; vector[N] Y; array[N] int dec; }\n",
+    "parameters {\n",
+    "  real<lower=0> mu; real<lower=0> driftone; real<lower=0> sigmabias;\n",
+    "  real<lower=0> boundary; real<lower=0> ndt; real<lower=0, upper=1> poutlier;\n",
+    "}\n",
+    "model {\n",
+    "  for (n in 1:N) {\n",
+    "    target += cogmod_rdm_lpdf(Y[n] | mu, driftone, sigmabias, boundary,\n",
+    "                              ndt, poutlier, dec[n]);\n",
+    "  }\n",
+    "}\n"
+  )
+  pars <- list(mu = 3, driftone = 0.08, sigmabias = 0.27, boundary = 0.93,
+               ndt = 0.3, poutlier = 0.01)
+  # Both responses, so each accumulator takes its turn as the loser, from a
+  # comfortable decision time down to a nanosecond above the non-decision time.
+  # The failure was at anything below about 5e-4.
+  dt <- c(1e-2, 1e-3, 3e-4, 1e-4, 1e-6, 1e-9)
+  d <- list(N = 2L * length(dt), Y = pars$ndt + rep(dt, 2),
+            dec = rep(0:1, each = length(dt)))
+
+  mod <- cmdstanr::cmdstan_model(cmdstanr::write_stan_file(code),
+                                 compile_model_methods = TRUE)
+  fit <- mod$sample(data = d, init = list(pars), chains = 1, iter_warmup = 1,
+                    iter_sampling = 1, fixed_param = TRUE, refresh = 0,
+                    show_messages = FALSE)
+  fit$init_model_methods(verbose = FALSE)
+  up <- fit$unconstrain_variables(pars)
+
+  expect_true(is.finite(fit$log_prob(up)))
+  g <- fit$grad_log_prob(up)
+  expect_true(all(is.finite(g)))
+
+  # And it is the right gradient, not merely a finite one: central differences
+  # on the unconstrained scale, checked against every coordinate.
+  h <- 1e-6
+  fd <- vapply(seq_along(up), function(j) {
+    e <- replace(numeric(length(up)), j, h)
+    (fit$log_prob(up + e) - fit$log_prob(up - e)) / (2 * h)
+  }, numeric(1))
+  expect_equal(as.numeric(g), fd, tolerance = 1e-4)
 })

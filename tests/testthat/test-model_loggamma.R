@@ -46,7 +46,7 @@ test_that("shape = 0 is exactly the shifted LogNormal", {
   for (shape in c(1e-12, 1e-9, 1e-6, 1e-4)) {
     expect_equal(
       dcogmod_loggamma(y, -0.7, 0.5, shape, 0.3, 0, log = TRUE),
-      dcogmod_lognormal(y, -0.7, 0.5, 0.3, 0, log = TRUE),
+      dcogmod_lognormal(y, -0.7, 0.5, 0.3, poutlier = 0, log = TRUE),
       tolerance = 5 * shape + 1e-12,
       label = sprintf("shape = %g", shape)
     )
@@ -506,13 +506,13 @@ test_that("dpars omitted from bf() get a natural-scale prior, not a link-scale o
                "exponential(100)")
   # lognormal on the natural scale is the same belief as normal on log(ndt)
   expect_equal(p$prior[p$class == "ndt" & !nzchar(p$dpar)],
-               "lognormal(-1.2, 0.2)")
+               "lognormal(-1.2, 0.5)")
 
   code <- brms::make_stancode(f, data = d, family = cogmod_loggamma(), prior = p,
                               stanvars = cogmod_loggamma_stanvars())
   expect_true(grepl("normal_lpdf(shape | 0, 0.5)", code, fixed = TRUE))
   expect_true(grepl("exponential_lpdf(poutlier | 100)", code, fixed = TRUE))
-  expect_true(grepl("lognormal_lpdf(ndt | -1.2, 0.2)", code, fixed = TRUE))
+  expect_true(grepl("lognormal_lpdf(ndt | -1.2, 0.5)", code, fixed = TRUE))
   # the min-RT bound is gone
   expect_false(grepl("uniform_lpdf(ndt", code, fixed = TRUE))
 })
@@ -563,7 +563,7 @@ test_that("modelled and omitted dpars can be mixed in one formula", {
                "normal(0, 0.5)")
   expect_equal(p$prior[p$class == "b" & p$dpar == "shape" & !nzchar(p$coef)],
                "normal(0, 0.2)")
-  expect_equal(p$prior[p$class == "ndt"], "lognormal(-1.2, 0.2)")
+  expect_equal(p$prior[p$class == "ndt"], "lognormal(-1.2, 0.5)")
   expect_equal(p$prior[p$class == "poutlier"], "exponential(100)")
 
   expect_silent(

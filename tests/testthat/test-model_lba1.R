@@ -408,3 +408,35 @@ test_that("cogmod_priors fences off the sigmabias = 0 flat direction", {
     )
   }
 })
+
+
+test_that("a mixed vector of start-point ranges takes each branch it needs", {
+  # .lba_dens_over_A() switches to its Taylor branch below delta = 1e-4, so one
+  # vectorised call can send some elements one way and the rest the other.
+  # rtdists's lognormal and gamma LBAs have the same structure and, until
+  # rtdists/rtdists#24, indexed one branch's parameters by the other branch's
+  # mask - so a small A gave the right answer only when every A in the call
+  # was small, and the tests, which swept one value at a time, never noticed.
+  # The sweep above is the same shape; this is the check it lacks.
+  A <- c(0, 1e-9, 1e-6, 1e-5, 0.2, 0.7)
+  t <- c(0.45, 0.6, 0.9, 0.5, 0.7, 1.1)
+  ndt <- c(0.2, 0.3, 0.1, 0.25, 0.2, 0.15)
+  mixed <- dcogmod_lba1(t, drift = 3, sigma = 1, sigmabias = A, boundary = 0.5,
+                        ndt = ndt, poutlier = 0.02)
+  each <- vapply(seq_along(A), function(i) {
+    dcogmod_lba1(t[i], drift = 3, sigma = 1, sigmabias = A[i], boundary = 0.5,
+                 ndt = ndt[i], poutlier = 0.02)
+  }, numeric(1))
+  expect_identical(mixed, each)
+  expect_true(all(is.finite(mixed) & mixed > 0))
+
+  # The other half of the rtdists bug: the small branch forgot to subtract t0.
+  # Without the outlier component the density is a pure shift in ndt.
+  expect_equal(
+    dcogmod_lba1(t + 0.1, drift = 3, sigma = 1, sigmabias = A, boundary = 0.5,
+                 ndt = ndt + 0.1, poutlier = 0),
+    dcogmod_lba1(t, drift = 3, sigma = 1, sigmabias = A, boundary = 0.5,
+                 ndt = ndt, poutlier = 0),
+    tolerance = 1e-12
+  )
+})

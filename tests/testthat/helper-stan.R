@@ -65,8 +65,21 @@
 .stan_dedupe_preludes <- function(codes) {
   named <- c(
     vapply(cogmod:::.SHIFTED, .stan_prelude_name, character(1)),
-    vapply(cogmod:::.CHOICE, .stan_prelude_name, character(1))
+    vapply(cogmod:::.CHOICE, .stan_prelude_name, character(1)),
+    # cogmod_exgaussian() and cogmod_geg() are not in either registry - they are
+    # plain families with an lpdf generator each - so their shared prelude is
+    # named here. The GEG needs the ex-Gaussian's log CDF inside its own
+    # density, not just for cens().
+    ".EXGAUSSIAN_STAN_PRELUDE"
   )
+  # One level down: cogmod_log_Phi() is pasted into the front of more than one
+  # prelude (the LogNormal's, the Wald's, the RDM's and the ex-Gaussian's), so
+  # once the family preludes are deduplicated it is still defined once per
+  # family that carries it. It goes last, after the family preludes have been
+  # stripped, so that the copy kept is the one inside the first surviving
+  # prelude - and so that a prelude is still matchable in full while its own
+  # copy is intact.
+  named <- c(named, ".LOG_PHI_STAN_PRELUDE")
   for (nm in unique(named[nzchar(named)])) {
     pre <- getFromNamespace(nm, "cogmod")
     hits <- which(vapply(codes, grepl, logical(1), pattern = pre, fixed = TRUE))

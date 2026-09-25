@@ -1,1202 +1,700 @@
-# cogmod 0.3.0
+# cogmod 0.3.3
 
 ## New features
 
-* New family **`cogmod_geg()`**, the Generalised Ex-Gaussian of
-  [Marmolejo-Ramos et al. (2023)](https://doi.org/10.1007/s11571-022-09813-2):
-  the ex-Gaussian with its CDF raised to a power, `F_GEG(x) = F_EG(x)^shape`.
-  The construction is Durrans' alpha-power family, so the density is
-  `shape * F_EG(x)^(shape - 1) * f_EG(x)` and stays closed form - Stan ships
-  both `exp_mod_normal_lpdf` and `exp_mod_normal_lcdf`, so the whole likelihood
-  is three lines and costs one extra CDF.
+* **A distributional parameter pinned at a boundary is now checked against the
+  response.** The three bounded-scale families are mixtures of a continuous
+  part and one or more point masses, and every weight involved can be fixed in
+  `bf()`. Fixing one at a boundary switches its component off, so any
+  observation belonging to that component has zero probability and the
+  log-likelihood is `-Inf` everywhere - which CmdStan reports only as
+  `Initialization failed after 100 attempts`, naming nothing. `cogmod_priors()`
+  now errors first, saying how many rows are involved and how to proceed.
+  Eleven combinations are covered: for `cogmod_choco()`, `pmid = 0` with a
+  response exactly at the midpoint, `pmid = 1` with one anywhere else,
+  `pex = 0` with an exact 0 or 1, `bex = 0` with a 1 and `bex = 1` with a 0;
+  for `cogmod_betagate()` the same `pex = 0` and `bex` cases plus `pex = 1`
+  with any interior response; and for `cogmod_betadiscrete()`, `pzero = 0`
+  with a 0 and `pzero = 1` with any rating. The first and the last are the
+  ones the documentation invites - `?rcogmod_betadiscrete` offers `pzero = 0`
+  as the way to say a scale has no zero category, and `?cogmod_priors`
+  suggests fixing `pmid` or `pzero` at 0 to switch the parameter off.
 
-  `shape = 1` is `cogmod_exgaussian()` **exactly**, not approximately, in R and
-  in Stan alike, so `loo_compare()` between the two is like-for-like.
+* **`cogmod_priors()` now covers `cogmod_choco()`, `cogmod_betagate()` and
+  `cogmod_betadiscrete()`.** Every distributional parameter of the three
+  bounded-scale rating families previously arrived either flat - improper - or
+  with a `brms` default aimed at a different parameterization. Two of those
+  were worse than unhelpful. The point-mass probabilities `pmid` and `pzero`
+  were flat on a `logit` link, which is improper in the posterior as well as
+  the prior whenever the event is absent from the data: with no exact
+  midpoints anywhere, the likelihood in `pmid` increases monotonically all the
+  way to zero and nothing stops the logit running to minus infinity. That is
+  `poutlier`'s failure, and they now get `poutlier`'s treatment, including an
+  omitted form whose mode is at zero. Measured on 400 slider responses with no
+  midpoints and no extremes: the flat defaults put `pex` at `-1.1e14` and
+  `pmid` at `-3.4e13`, `Rhat` 2.9, ESS 5, with 12% divergent transitions;
+  these priors give -4.70 and -5.15, `Rhat` 1.00, ESS 3000-4000, no
+  divergences. `phi` arrived with
+  `student_t(3, 0, 2.5)`, which `brms` supplies because it recognises the name
+  from its own beta family - the same trap `cogmod_exgaussian()`'s `sigma`
+  falls into; on `cogmod_betadiscrete()`'s `log` link that prior's 95%
+  interval runs to `phi = 2853`, where the Beta has collapsed onto a single
+  rating category, so it is overridden rather than filled. The Beta precisions
+  are fenced away from both ends: below about 1 the underlying Beta is
+  U-shaped and unbounded, and a large one narrows it sharply. `mu` is
+  left to `brms` in all three, since on a `logit` link its
+  `student_t(3, 0, 2.5)` is the standard weakly informative choice. See
+  `?cogmod_priors` for the full table and the reasoning behind each number.
 
-  What it buys is shape. Sweeping `sigma` and `tau` across the values RT data
-  occupy, the ex-Gaussian spans skewness 0 to 2 and excess kurtosis 0 to 6;
-  freeing `shape` widens that to roughly -0.4 to 4.8 and 0 to 35. In particular
-  the GEG can be **negatively skewed**, which the ex-Gaussian cannot be at any
-  parameter value.
+* **`cogmod_inits()` now covers `cogmod_choco()` and `cogmod_betadiscrete()`.**
+  Both are bounded-scale families for subjective ratings, and neither has a
+  flat region of the kind that makes an init mandatory for the RT families -
+  every start is a proper density and a chain begun at the default does move.
+  What it has to move away from is a description of a rating scale that no
+  data set matches. The logit origin puts `pmid` and `pzero` at 0.5, i.e. half
+  of every response exactly on the midpoint or outside the scale altogether;
+  they now start at 0.05. `cogmod_choco()`'s two Beta precisions are behind a
+  `softplus` link, so `softplus(0) = 0.69` puts both Beta shapes below 1 - a
+  U-shaped rating distribution, unbounded at both ends of each half of the
+  scale; they now start at 2, in the middle of a plateau where the fit is
+  insensitive to the exact value. `pex` starts at 0.1 rather than 0.5. On a
+  2000-trial slider data set the old start sat about 1900 log-likelihood units
+  from the new one, 983 of them `pmid` alone. For `cogmod_betadiscrete()`,
+  `phi = 1` with `mu = 0.5` is the discrete Uniform, which is where the
+  origin already is - it is named so that `init = "random"`, which draws `phi`
+  anywhere from 0.14 to 7.4, no longer decides it. So this buys warmup rather
+  than a fit that would otherwise fail.
 
-  What it costs is interpretability, and specifically the property the
-  ex-Gaussian is normally reported for. **The mean is no longer `mu + tau`** -
-  at `mu = 0.4`, `tau = 0.2` it runs 0.31 at `shape = 0.2` and 1.15 at
-  `shape = 20` - and it has no closed form, so `posterior_epred()` integrates
-  numerically and is the one generic materially slower here than for a
-  closed-form family. On a full data set, summarise `posterior_predict()` draws
-  instead.
+* **`cogmod_inits()` lists `cogmod_geg()` among the families it supports.** It
+  had targets for it but was not naming it, so the error message for an
+  unsupported family said cogmod_geg() was one. The supported list is now
+  derived from the targets rather than kept beside them.
 
-  `shape` is also badly confounded with `mu`: fitted by maximum likelihood to
-  the lexical-decision data used in the vignettes, the two correlate about
-  -0.98 at the optimum, and the other estimates move with it (on one condition
-  `mu` goes 0.429 to 0.508, `sigma` 0.051 to 0.037, `tau` 0.119 to 0.162).
-  `shape` re-slices the same bulk-and-tail split rather than adding an
-  independent axis. `cogmod_priors()` therefore gives it a deliberately
-  informative `normal(0, 0.5)` on the `log` link - centred on `shape = 1`, the
-  ex-Gaussian - and `cogmod_inits()` starts it there.
+* **`cogmod_inits()` jitters the hierarchical blocks a fifth as much as the
+  population-level ones, and starts smooths flat.** One `jitter` (default
+  0.25) now applies to intercepts and slopes; the standardized group-level
+  effects `z_*`, the smooth coefficients `zs_*` and their scales `sd_*` and
+  `sds_*` get a fifth of it (0.05), and `sds_*` starts at 0.05 rather than the
+  generic 0.25. Two numbers set the two tiers directly. The reason is that a
+  unit of noise on a group effect or a spline coefficient is not a unit on the
+  linear predictor: it is multiplied by a scale and a design column - tensor
+  basis values reach tens - once per participant or basis function. On a
+  production model with a tensor smooth on five distributional parameters and
+  a participant intercept on six, the old jitter moved linear predictors by
+  one to two and a half link units at some rows, which started one
+  participant's non-decision time above 98 of their 128 trials and a sigma at
+  0.07 s where 0.5 was intended, all of it then explained by the outlier
+  component; at 0.05 on those blocks the same model started where the targets
+  say. Chains still start apart where it matters for Rhat, on the intercepts
+  and slopes. Warm starts (`cogmod_warmstart()`, `warmstart =`) use the same
+  rule at their smaller default.
 
-  Use it when fit is the point. When the `mu`/`tau` decomposition is the point,
-  `cogmod_exgaussian()` is the family to fit; when a better-fitting descriptive
-  family is the point, `cogmod_logstudent()` and `cogmod_loggamma()` decouple
-  skew from tail weight with parameters that stay interpretable.
-
-* New vignette, `vignette("performance")`, covering how to speed up sampling
-  for the choice+RT families: approximating a fit first with Pathfinder before
-  committing to full MCMC, chain and within-chain (multithreading)
-  parallelization, spreading short warmup runs across an HPC job array and
-  recombining them with `brms::combine_models()`, and amortized inference
-  (e.g. BayesFlow) as a longer-term direction.
-
-* **`pcogmod_rdm()` gains a `response` argument**, giving the *defective* CDF
-  `P(RT <= q, choice = response)` rather than only the RT distribution
-  marginally over the choice. It does not reach one - its limit is the
-  probability of that response, which `pcogmod_rdm(Inf, response = k)` gives -
-  and the two of them sum back to the marginal CDF. This is what a
-  defective-CDF or quantile-probability plot of a race model needs.
-
-  `response` goes *after* `poutlier` in the signature, unlike in
-  `dcogmod_rdm()` and `pcogmod_ddm()`, which put it before. `poutlier` is a
-  model parameter and `response` is not, so every parameter now comes first and
-  the argument stays where a positional call already expects it - only a
-  positional `lower.tail` or `log.p`, in eighth place or later, is affected.
-
-  There is no closed form for it, unlike the marginal CDF, where the race
-  survival factorises as `S0 * S1`. It is quadrature over the defective density,
-  so it is accurate to about `1e-8` rather than to machine precision, and about
-  ten times slower per element - 200 points take 0.6 s against 0.07 s for the
-  marginal. `lower.tail = FALSE` integrates the upper side directly rather than
-  subtracting, so the defective survival stays accurate into the tail.
-
-* **New `qcogmod_rdm()`**, the quantile function, inverting `pcogmod_rdm()` by
-  root-finding - marginally, or per response. `scale_p = TRUE` reads `p` as a
-  fraction of the chosen response's own probability, so `p = 0.5` is that
-  response's median; that is the form a quantile-probability plot wants.
-
-* **`cogmod_rdm()` now accepts a start-point range of exactly zero.**
-  `bias = 0` (`sigmabias` in the `brms` family) is a model, not a degenerate
-  parameter: both accumulators start at `0` on every trial and the race is
-  between two plain Walds - equation 2 of Tillman et al. (2020), which is the
-  limit the density already took. `cogmod_lba1()` and `cogmod_lba2()` have
-  always allowed it and the RDM excluding it was an inconsistency. Accepted in
-  R and in Stan alike; a negative range is still rejected.
-
-  This does not make the `sigmabias` direction any better identified. The
-  `softplus` link still reaches zero only at minus infinity, so the flat
-  `sigmabias -> 0` ridge is as long as it ever was and `cogmod_priors()` still
-  fences it.
+* **The 7-parameter `cogmod_ddm()` is 1.7x cheaper per gradient when both
+  `sigmabias` and `sigmandt` are estimated.** Stan's 7-parameter
+  `wiener_lpdf()` integrates the start-point and non-decision-time ranges out
+  by adaptive cubature - eight integrals per observation, one for the density
+  and one per partial derivative - and takes a tolerance for them that the
+  Stan code never passed, so it ran at Stan's default of 1e-4. It now passes
+  `1e-3` (`.DDM_WIENER_PRECISION`). Measured per observation and gradient on
+  CmdStan 2.38.0: with both ranges open, 274 us falls to 163; with one open
+  the cost does not move (102 to 100 us), because a one-dimensional integral
+  is already settled by cubature's first pass, and nothing much happens past
+  1e-3 either (153 us at 1e-2), which is why it stops there. On the
+  intercept-only program `benchmarks/gradient_cost.R` times, 5000 trials with
+  all seven parameters estimated, a gradient went from 3.25 s to 1.50 s
+  (ratio 0.46, median of 21 alternating blocks). The price: the
+  Stan density still agrees with the R one to 1e-5 over the test grid, but
+  its gradient sits about 2e-5 relative from central differences at a typical
+  point where it sat 2e-6 before, and 1.2e-4 with `ndt` pushed 2.5 log units
+  above its start - a point no chain visits after warmup, and small next to
+  the leapfrog error a sampler already carries, but a change of an order of
+  magnitude, so it is recorded with the constant. Any value between 3e-4 and
+  1e-3 measures the same gradient error and 1e-3 is the cheaper. A paired fit
+  settles it (`benchmarks/ddm_precision/`): the 7-parameter model on 100
+  trials, both tolerances from one start, metric and seed, end to end and
+  again with adaptation held fixed - the same 24 leapfrog steps per
+  iteration, the same step size, acceptance 0.90 against 0.92, fewer
+  divergences (7 against 10 and 11), min bulk ESS 248 against 206 and 261
+  against 224, at half the cost per gradient (445 against 883 ms): 2.2 to
+  2.4 times the effective samples per CPU second. That fit also puts the
+  standalone figures above in perspective: at its posterior a gradient cost
+  8.3 ms per observation at Stan's default tolerance, thirty times the
+  274 us of the benign benchmark point. The same cost measurements are now
+  in `?cogmod_ddm`, under the between-trial variability section:
+  estimating `sigmadrift` costs about 2.8x the classic model per gradient,
+  estimating one of `sigmabias` / `sigmandt` about 18x and both about 30x,
+  and the fast path is a test for *exactly* zero, so a tight prior does not
+  buy it back - only `sigmandt = 0` in `bf()` does. Nothing user-facing said
+  so before, and it is the difference between a day and weeks on a large
+  data set.
 
 ## Bug fixes
 
-* **A missing, infinite or zero-length reaction time no longer aborts a
-  density.** Of the sixteen mixture families, four threw
-  `missing value where TRUE/FALSE needed` on `dcogmod_*(NA_real_)` -
-  `cogmod_lba1()`, `cogmod_lba2()`, `cogmod_rdm()` and `cogmod_ddm()` - and two
-  threw on `Inf`: `cogmod_loggamma()` and `cogmod_lba2()`. The rest returned
-  `0`. The split was not principled: those are the densities whose cores branch
-  on a comparison rather than being arithmetic all the way down, and `any(NA)`
-  is `NA` while `if (NA)` is an error. All sixteen now return `0`, which is
-  what the shared machinery already wrote for those rows and could never reach.
-  A missing **parameter**, and a missing **response**, are handled the same way
-  and for the same reason.
+* **`cogmod_priors()` now sets the wiggliness prior (`sds`) of a smooth on a
+  distributional parameter.** The table in `?cogmod_priors` has always listed
+  `sds` alongside `sd` at `exponential(1)`, but brms fills a smooth's blanket
+  `sds` row itself and leaves the per-term rows empty, so a function that
+  fills only what arrives empty never reached it: `ndt ~ s(x)` kept
+  `student_t(3, 0, 2.5)` on its smooth's scale. On a log or logit link that is
+  a half-t with median 1.9 in link units - loose enough for the smooth alone
+  to move a `sigmandt` by a factor of seven or walk a `sigmabias` across its
+  range, behind an intercept the family had deliberately fenced. The blanket
+  row is now replaced, for every family and every dpar `cogmod_priors()`
+  handles; the response's own smooth is left to brms, as its slopes are.
+  Group-level `sd` rows were never affected.
 
-  This matters beyond tidiness: one bad entry used to take the whole vector
-  down with it, so a single `NA` in a column of reaction times aborted the
-  call instead of costing that row.
+* **`cogmod_rdm()`'s gradient is now exact.** Every normal tail in the RDM's
+  Stan code went through Stan's `std_normal_lcdf()`, whose value is right but
+  whose partial derivatives are an approximation, and in a race those partials
+  *are* the gradient of the drifts and the boundary. Measured against central
+  differences of the log probability, the gradient sat 2e-4 relative from the
+  truth at a typical start and as far as 7e-2 where the drift is small, while
+  the log probability itself was smooth to 1e-7. HMC stays exact under an
+  inexact gradient - the accept step corrects for it - but pays in step size
+  and acceptance. All eleven calls now go through `cogmod_log_Phi()`, the
+  function introduced below for the LNR, which brings the worst error over the
+  same grid to 2e-7 at about 14% more per gradient evaluation. The function
+  moved into a prelude of its own (`.LOG_PHI_STAN_PRELUDE`) so that any family
+  can take it; the LogNormal's and the RDM's preludes both start with it.
 
-  `dcogmod_exgaussian()` still returns `NA` for `NA`. It is a plain density
-  with no outlier component, so it follows `dnorm()` rather than the mixture
-  convention.
+* **`cogmod_invgaussian()`'s gradient is now exact.** The same defect as the
+  RDM's, in the family's own Stan code: every normal tail of the Wald - the two
+  terms of its CDF and survival, the two integrated ones a non-decision range
+  needs, and the truncation factors that make `sigmadrift` a *truncated* normal
+  drift - went through `std_normal_lcdf()`. `sigmadrift` is differentiated
+  almost entirely through those truncation factors, and its partial sat 1.2e-3
+  relative from central differences of the log probability, `mu`'s 2.7e-4,
+  against 1e-8 for the families already on `cogmod_log_Phi()`. Six of the
+  eighteen points the gradient check walks failed on it. All of them now go
+  through `cogmod_log_Phi()`, which brings the worst error over the same grid
+  to 5e-8; the truncation factors lose a round trip through `log1m_exp()` in
+  the bargain, since `log1m_exp(std_normal_lcdf(-z))` is `cogmod_log_Phi(z)`
+  written the long way. `cogmod_exwald()` builds on the same prelude and gets
+  the same fix. Values are unchanged.
 
-* **Zero-length input gives a zero-length answer.** `dcogmod_*(numeric(0))`
-  returned a length-1 value - or, in the same four families, threw - because
-  the shared preparation recycled the empty vector up to the parameters and
-  `rep_len(numeric(0), 1)` is `NA`. It now returns `numeric(0)`, as every
-  `d`/`p`/`q` function in base R does. A zero-length *parameter* alongside a
-  real quantile is now rejected rather than silently becoming a vector of
-  `NA`s.
+* **`cogmod_geg()`'s CDF term is no longer Stan's `exp_mod_normal_lcdf()`.**
+  The alpha-power construction puts `(shape - 1) * log F_EG` inside the
+  *density*, so the ex-Gaussian CDF is differentiated on every evaluation, not
+  only when a response is censored. The built-in agrees with the R side to
+  1e-8 over the range the tests walk, but outside it - at `sigma / tau` around
+  9, where the two terms of `F_EG` cancel hardest - both its value and its
+  partials go wrong: Stan's own central differences put `d/d sigma` at 28.5
+  where its autodiff said 77.5, and `d/d tau` at 113.6 against 53.0. The Stan
+  side now subtracts the two terms in log space itself, through
+  `cogmod_log_Phi()`, exactly as `.lcdf_exgaussian()` always has in R; over the
+  same grid the worst gradient error is 2e-9, and the log CDF matches
+  quadrature of the density to 5e-15. It costs about 10% per gradient
+  evaluation (3.1 ms to 3.5 ms over 5000 trials, median of 21 alternating
+  blocks). Two things kept it to that. The ex-Gaussian density is the CDF's
+  second term over `tau`, so the GEG writes both out from one pair of normal
+  tails rather than calling for each; and the pair is written inline rather
+  than returned from a helper - a `vector[2]` return measured half again the
+  cost of the inline form, through the autodiff-stack allocation it makes on
+  every call.
 
-* **`pcogmod_ddm(q, response = k, lower.tail = FALSE)` was not a survival.**
-  It returned `1 - P(RT <= q, choice = k)`, which is
-  `P(RT > q OR choice != k)`; at `q = Inf` that gave the probability of the
-  *other* response rather than zero. It is now the defective survival
-  `P(RT > q, choice = k)`, so the two tails add to that response's own
-  probability rather than to one. The marginal (`response = NULL`) is
-  unchanged, and so is the lower tail in both forms. Same convention as
-  `pcogmod_rdm()`.
+* **`cogmod_exgaussian()`'s Stan density, CDF and survival go through
+  `cogmod_log_Phi()`.** The density is the same expression as before -
+  `exp_mod_normal_lpdf()` and `dcogmod_exgaussian()` in R evaluate it too, and
+  log-probabilities are unchanged to every digit that matters - but it is now
+  written out over `cogmod_log_Phi()`, so it stays finite about 38 standardized
+  units into the left tail where the built-in's bare `erfc` underflows, and it
+  shares its normal tail with the CDF that `cogmod_geg()` is built on. The
+  `cens()` path gets the accurate CDF with it: `cogmod_exgaussian_lcdf()` was
+  `exp_mod_normal_lcdf()` and had the same wrong partials as the GEG's, and
+  `cogmod_exgaussian_lccdf()` was on `std_normal_lcdf()`. About 10% per
+  gradient evaluation, the cost of `cogmod_log_Phi()` over the built-in.
 
-* `pcogmod_invgaussian(NA_real_)` threw rather than returning `NA`.
+* **`cogmod_lnr()` and `cogmod_lognormal()` no longer hand Stan a non-finite
+  gradient in the tails.** `cogmod_lognormal_ldiff_Phi()` formed
+  `log(Phi(y + c) - Phi(y))` from `erfc` as `log(u1) + log1m(u2 / u1)`, and the
+  `A == 0` branch of `cogmod_lognormal_acc_ltails()` called `lognormal_lcdf()`
+  and `lognormal_lccdf()`, which are `erfc` alone. `erfc` underflows near
+  `x = -38` - about 38 standardized log units from an accumulator's median
+  finishing time - and past that the value is `log(0)` and the partials are
+  `inf` or `0 / 0`. The outlier mixture then hides it: `log_mix()` stays finite
+  with one component at `-inf`, but reverse mode multiplies the zero adjoint
+  into the stored partial and `0 * inf` is `NaN`, so one response in a data set
+  turned the gradient of the whole model to `NaN`. That reads as
+  `Gradient evaluated at the initial value is not finite` at the start of a fit
+  and as divergent transitions afterwards. Both now go through one function,
+  `cogmod_log_Phi()`: `erfc` in the body of the distribution and, below
+  `x = -25`, the asymptotic expansion of the tail, whose leading term is the
+  exponent itself, so nothing underflows and the result stays finite and
+  differentiable as far as `x = -1e150`; its six terms agree with R's
+  `pnorm(log.p = TRUE)` to 4e-16 relative, so the two branches meet with no step
+  in the density. `cogmod_lognormal_ldiff_Phi()` now takes the difference in
+  logs with `log1m_exp()` rather than as a quotient of two minute numbers.
+  Measured over a grid of decision times from 1 ms to 300 s and sigmas from
+  0.02 to 1.2, with and without a start-point range: 6 of 72 gradients were
+  non-finite before and none are now, and the densities agree with the R
+  kernels everywhere, with no value newly truncated to `-inf`.
 
-* `pcogmod_rdm(q, lower.tail = TRUE)` returned `NaN` instead of `0` at
-  `q <= 0` when `poutlier > 0`. Both mixture components are exactly `log(1)`
-  there, and the mixture of them landed 2e-17 *above* zero rather than on it,
-  which `log(1 - exp(.))` cannot take. Reached in practice by
-  `qcogmod_rdm()`, whose root search starts at zero.
+  `std_normal_lcdf()` is not used for this, although it has the range - its
+  value is exact against `pnorm(log.p = TRUE)` as far as `x = -1e7`. Its
+  analytic partials are not: on 20000 responses they sat 1.7e-3 from central
+  differences of the log probability where the `erfc` route sat 4e-6, and in a
+  race those partials *are* the gradient of `nu` and `sigma`.
 
-* `pcogmod_rdm(NA)` returned `1` rather than `NA`, the mixture helper mapping a
-  missing value onto a log-survival of `-Inf`.
+  Where the old code's gradient was finite it was not always right. On 20000
+  responses with a start-point range it sat 8.3e-4 from central differences and
+  the new one sits 9.6e-7, which is the finite differences' own noise; without
+  a start-point range both sit at 4.1e-6, so nothing there was given up for it.
 
-* The direct lower-tail branch of `.pwald()` had no small-`bias` case; both of
-  its branches divide by the start-point range. Unreachable before, since
-  `bias = 0` was rejected.
-
-## Breaking changes
-
-* **The pre-rename names are gone.** `rt_lognormal()`, `lnr()`, `ddm()`,
-  `rdm()`, `choco()`, `betagate()`, `betadiscrete()`, `lba()`, `rt_lba()` and
-  every function derived from them - 140 exports in all - were kept as synonyms
-  through 0.2.1 and are removed here. Use the `cogmod_*` name: `rt_lognormal()`
-  is `cogmod_lognormal()`, `rrt_lognormal()` is `rcogmod_lognormal()`,
-  `rt_lognormal_stanvars()` is `cogmod_lognormal_stanvars()`, and likewise for
-  the densities, the `*_lpdf_expose()` and the `brms` post-processing hooks.
-
-  The synonyms existed so that a model fitted before the rename could still be
-  summarised, since `brms` looks up `log_lik_<family>()` by the name stored on
-  the fit. That window closes with the first CRAN release: there is no released
-  version to be compatible with, and a fit made under an old name can be
-  brought forward by setting `fit$family$name` to the `cogmod_*` one. Refitting
-  is the safer route, as several parameterizations changed in 0.2.1 as well.
-
-* **`cogmod_exgaussian()`'s `mu` is now on an `identity` link** and is
-  unbounded, where it was on `softplus` with a lower bound of zero. `sigma` and
-  `tau` are unchanged.
-
-  `mu` is the **location** of the Gaussian component, not a scale. The
-  convolution is well defined for any real value - the density integrates to one
-  at `mu = 0` and below - and the Stan `lpdf` has always agreed, checking only
-  `sigma` and `tau`. The old bound lived in `.prepare_exgaussian()` and in the
-  family declaration alone, so the R functions were refusing inputs the sampler
-  would happily fit.
-
-  Two things were wrong with constraining it. Interpretability, which is most of
-  the point of the ex-Gaussian: behind `softplus` a coefficient is not in
-  seconds, and the conversion factor moves with the intercept - the local slope
-  is 0.33 at `mu = 0.4` s, 0.39 at 0.5 s and 0.63 at 1 s, so the same effect
-  reads as a different number depending on where the intercept sits. And
-  fidelity: for fast, heavily-tailed data the Gaussian component genuinely
-  belongs near or below zero with `tau` carrying the mass, and forcing `mu > 0`
-  distorts the `mu`/`tau` split in exactly the cases where that decomposition is
-  the quantity being estimated. `identity` also matches every other
-  implementation - `brms`'s own `exgaussian()`, `retimes`, and the estimates in
-  the literature - so fitted values are now directly comparable.
-
-  **What to change.** Coefficients on `mu` are now in seconds and are not
-  comparable to values from an earlier fit; refit rather than reinterpret. Pass
-  `cogmod_exgaussian(link_mu = "softplus")` to keep the old behaviour.
-
-* **`cogmod_priors()` now sets a prior on `cogmod_exgaussian()`'s `mu`
-  intercept**, `normal(0.4, 0.25)`. It previously left `mu` to `brms`, whose
-  `student_t(3, 0, 2.5)` was a fair statement on the softplus scale (median
-  0.69 s) but on `identity` is centred on zero seconds and rates a Gaussian
-  centre of -2 s as plausible as one of +2 s. The prior deliberately does not
-  exclude negative values. Only the intercept is set; the response's slopes are
-  the effects being estimated and are left alone.
-
-* The **outlier component is now a half Normal with a fixed scale of 0.2 s**,
-  where it was a half Student-t with 3 degrees of freedom and a user-supplied
-  scale. Two things changed, for one reason.
-
-  The Student-t's tail was heavier than every decision density in the package,
-  so far-out slow responses were eventually explained better by the outlier
-  component than by the model: against a shifted LogNormal at `poutlier =
-  0.02`, a 5 s response was attributed to it with probability 0.86 and the
-  crossover sat at 3.86 s, with `ndt` pulled up behind it. `vignette("outliers")`
-  already flagged this as a defect. A Gaussian never gets there - the same
-  responsibility is 0.000 out to 30 s - and it costs nothing where the
-  component is actually needed, because `exp(-x^2 / 2s^2)` kills the far tail
-  at any scale: at 0.2 s it holds 76% of its peak density at 0.15 s and 46% at
-  0.25 s, against 85% and 66% for the half-t. The slow tail now belongs to the
-  decision family, which is what `cogmod_loggamma()`'s `shape` and
-  `cogmod_invgaussian()`'s `sigmadrift` are for.
-
-  A welcome side effect: the `poutlier -> 1` degenerate mode is now thousands
-  of log-likelihood units below the sensible one rather than hundreds, and
-  `ndt` and the decision parameters no longer drop out of the density there,
-  because a half Normal cannot explain a slow response at all. The mode still
-  has infinite volume in `poutlier` itself, so `cogmod_priors()` is still not
-  optional.
-
-* **`minrt` is removed** from every family, density, RNG, `*_stanvars()` and
-  `*_lpdf_expose()`. The package works in **seconds**, full stop. The
-  equivariance `minrt` bought in the likelihood was already fictional end to
-  end: `cogmod_priors()` shifted only the `ndt` prior with it, while the
-  `sigmandt` prior of `cogmod_ddm()`, the `sigmadrift` prior of
-  `cogmod_invgaussian()` and the `mu` priors are stated in seconds outright -
-  and `cogmod_priors()` is not optional. Making the assumption explicit costs
-  one argument from about twenty signatures and removes a whole class of
-  misconfiguration.
-
-  Calls passing `minrt` now fail with R's usual `unused argument` error. Data
-  in another unit fails **silently**, as it always did when `minrt` was left at
-  its default: the outlier component's log-density at `RT = 400` is about
-  `-2e6`, so it contributes nothing, the mixture collapses to the unmixed
-  shifted family, `poutlier` goes to zero and `ndt` is pinned by the fastest
-  observed response. Nothing errors and the chains still initialise. Divide by
-  1000 before fitting.
-
-  `cogmod_priors()` accordingly gives `ndt` a fixed `normal(-1.2, 0.2)`, and
-  `cogmod_inits()` starts it at 0.1 s.
-
-* `cogmod_invgaussian()` gains **`sigmadrift`**, the between-trial SD of the
-  drift rate, so the Wald can produce the long right tails empirical RT
-  distributions have. Described in full under 0.2.0 below.
-
-* New function **`pcogmod_ddm()`**, the diffusion's cumulative distribution
-  function - the package had `pcogmod_rdm()` and `pcogmod_invgaussian()` but no
-  DDM counterpart. `response = NULL` gives the RT distribution marginally over
-  the choice, and `response = 0`/`1` the defective CDF that boundary carries.
-
-  It is the series that `rcogmod_ddm()` now inverts to draw from, so it was
-  written and validated anyway; exposing it costs nothing and it is the more
-  accurate of the two available implementations. Against numerical integration
-  of `dcogmod_ddm()` over a grid of 360 cells the worst deviation is 1e-15,
-  where `rtdists::pdiffusion()` is out by up to 5e-4 (and `pdiffusion(Inf, ...)`
-  by 1.4e-4). It covers the classic 4-parameter DDM plus the outlier component;
-  the between-trial variability parameters would each need their own quadrature
-  layer, so they are not arguments rather than being silently ignored.
-
-## Performance
-
-* **`cogmod_rdm()` samples about 1.5x faster.** It was the most expensive
-  likelihood in the package - roughly 5.9 us per observation per gradient,
-  against 2.6 for `cogmod_lba2()` and 0.8 for `cogmod_lnr()` - and two thirds of
-  that was avoidable. The Stan survival evaluated the normal CDF at `alpha` and
-  at `beta` twice each, once inside `log_g()` and once again for the terms that
-  follow it, and it assembled its six signed terms through a helper returning a
-  `vector[2]`, which allocates on the autodiff stack once per term per
-  observation per leapfrog step.
-
-  `log_g()` now takes `log Phi(u)` from its caller, which brings the survival
-  from six normal-CDF evaluations to four, and the six terms are grouped into
-  the two differences that are individually monotone in the threshold, so each
-  is one `log_diff_exp()` of known sign and nothing on the hot path returns a
-  vector. The maths is unchanged and the grouped form cancels *less*: against
-  the R implementation it agrees to 6e-11 where the term-by-term form reached
-  5e-9. Gradients are unchanged to the precision finite differences can resolve.
-
-* **`posterior_predict()` is about 2x faster for the choice+RT families.** brms
-  calls it once per observation, so anything done per call is paid thousands of
-  times, and for every family except `cogmod_ddm()` the sampling itself was the
-  small part: two `data.frame()` constructions and an `as.matrix()` came to
-  roughly 63% of the call, against 13% for the actual draws. The registry's
-  `rng` entries now return a bare `list(rt, response)` and `.rchoice()` can
-  return a matrix directly, so the prediction path builds no data frame at all.
-  A `cbind()` costs about a seventeenth of the `data.frame()` it replaces.
-
-  `rcogmod_lnr()`, `rcogmod_rdm()`, `rcogmod_lba2()` and `rcogmod_ddm()` still
-  return a data frame, with the same draws for the same seed - only the internal
-  path changed. Measured on the `vignette("decision_making")` models at 20
-  draws: LNR 41.5 -> 20.7 us per observation-draw, LBA 32.9.
-
-* **`cogmod_ddm()` samples its predictions 4-6x faster**, on top of the above.
-  It was the slowest family to predict from by an order of magnitude, because
-  `brms::rwiener()` takes one parameter set per call and roughly 85% of that
-  call is fixed setup - which cannot amortise when every posterior draw carries
-  its own parameters. (rtdists' marginal cost is 1.4 us per draw against a
-  772 us fixed cost; RWiener's sampler does not amortise at all, staying at
-  55-90 us per draw for any n.)
-
-  Draws are now taken by inverting the CDF, which vectorises across parameter
-  sets because every step acts on the whole vector at once. The large-time
-  series splits into a part that depends on the time and a part that does not,
-  so the latter is built once and each evaluation is a single `exp()` and a
-  column sum; and the density falls out of the same `exp()`, which makes a
-  Newton step cost exactly what a bisection step costs. Eight Newton passes
-  leave about 0.6% of draws for a bisection cleanup that cannot fail, since the
-  bracket is valid by construction.
-
-  Accurate to 1e-13 in log RT against a 60-step bisection, with no
-  Kolmogorov-Smirnov failure against either `brms::rwiener()` or
-  `rtdists::rdiffusion()` over a wide parameter grid. The CDF underneath it
-  agrees with numerical integration to 1e-9, where `rtdists::pdiffusion()` is
-  out by up to 5e-4. On the `vignette("decision_making")` models:
-  DDM 560 -> 122 us per observation-draw, DDM-5 483 -> 75.
+  Sampling is not slower in the case most models are in.
+  `cogmod_lognormal_acc_logcdf()` and `cogmod_lognormal_acc_logsurv()` now take
+  the single tail they were asked for when `sigmabias = 0`, instead of building
+  the pair and discarding one: the two share no work there, and `cogmod_lnr()`
+  reads the survival alone. On 20000 responses a gradient of the plain LNR came
+  out about 20% cheaper than before and one with a start-point range about 15%
+  dearer, the latter buying the corrected gradient above.
 
 ## Documentation
 
-* Every help page now documents what each of its functions returns, rather than
-  only the random-generation function it is named after - the `brms` family
-  object, the `stanvars`, and the shape of the `log_lik()`,
-  `posterior_predict()` and `posterior_epred()` output, including the families
-  whose `posterior_epred()` errors because the decision time has no finite mean.
+* Help pages that sent the reader to `vignette("rt_models")` or
+  `vignette("performance")` now link to those articles on the package website.
+  Both are website articles, not installed vignettes, so the call failed.
 
-* Examples that were commented out now run. The plots are live, the `bf()`
-  formulas are built, and the `*_lpdf_expose()` and model-fitting snippets are
-  in `\donttest{}` behind a check for `cmdstanr` and a CmdStan installation
-  instead of `\dontrun{}`, so they execute wherever the toolchain is present.
-  `p_outlier()`, `with_outliers()` and `cogmod_inits()` gained real examples.
+* The `cogmod_warmstart()` example is now self-contained and runs (with
+  CmdStan): it simulates its data, fits the pilot and the warm-started model,
+  and writes the warm-start table to a temporary file rather than to the
+  working directory.
 
-* `DESCRIPTION` cites the papers behind the models.
-
-# cogmod 0.2.1
+# cogmod 0.3.2
 
 ## New features
 
-* **`sigmabias = 0` is now allowed in `cogmod_lba1()` and `cogmod_lba2()`**, and
-  in the single-accumulator case it is the **recinormal**, or LATER, model of
-  [Carpenter & Williams (1995)](https://doi.org/10.1038/377059a0): the
-  accumulator starts at zero on every trial, so the decision time is
-  `boundary / drift` and `1 / (RT - ndt)` is normally distributed, with `mu` and
-  `sigma` the mean and SD of *promptness*. Zero was previously rejected as an
-  invalid parameter; it is a nested model, and the bound is now closed for the
-  same reason `cogmod_invgaussian()`'s `sigmadrift` and `cogmod_ddm()`'s three
-  between-trial variabilities are.
+* **`cogmod_lognormal()` gains `sigmabias`**, the same between-trial
+  start-point range as the LNR's below: the decision time is the LogNormal
+  multiplied by a `Uniform(1, 1 + sigmabias)` distance, which is the
+  single-accumulator LBA with a LogNormal drift rate and its threshold offset
+  pinned at 1. At `sigmabias = 0` - the default of `rcogmod_lognormal()`,
+  `dcogmod_lognormal()` and `pcogmod_lognormal()`, placed after `ndt` and
+  before `poutlier` as the Wald's `sigmadrift` is, and the value to fix in the
+  formula unless
+  the design speaks to start-point variability - the family is the shifted
+  LogNormal exactly as before, bit for bit and at the same cost. The CDF and
+  survival `cens()` needs, the mean `posterior_epred()` reports (which gains a
+  factor `1 + sigmabias / 2`) and the Stan functions all carry the range, and
+  agree with quadrature over the start point to `1e-7` and with each other to
+  `1e-10`. The kernels are shared with `cogmod_lnr()`, which is now a race of
+  two of these accumulators in code as well as in theory. As for the LNR, a
+  formula that omits `sigmabias` estimates it, `cogmod_priors()` fences the
+  flat direction at zero, and fits made with earlier versions have to be
+  refit; the two vignette LogNormal models were. `cogmod_logstudent()` and
+  `cogmod_loggamma()` do not get the parameter: the density needs a partial
+  first moment of the rate distribution, which does not exist for a Student-t
+  on the log scale and needs incomplete gamma functions for the log-Gamma.
 
-  ```r
-  bf(rt ~ 1, sigmabias = 0, boundary = 1)  # free: mu, sigma
-  ```
+* **`cogmod_lnr()` gains `sigmabias`**, a between-trial start-point range:
+  each accumulator now starts at `Uniform(0, sigmabias)` and runs to a
+  threshold `1 + sigmabias` at its LogNormal rate, so its finishing time is
+  the distance divided by the rate rather than the reciprocal of the rate
+  alone. At `sigmabias = 0` - the default of `rcogmod_lnr()` and
+  `dcogmod_lnr()`, and the value to fix in the formula unless the design can
+  identify a start-point range - the family is the LNR exactly as before, bit
+  for bit and at the same cost, since both the R and the Stan kernels take the
+  plain lognormal branch there. Above zero it is the LBA with LogNormal drift
+  rates ([Heathcote & Love, 2012](https://doi.org/10.3389/fpsyg.2012.00292)),
+  the model the LNR was introduced as a limit of: with a LogNormal *distance*
+  as well as a LogNormal rate the two fold into one `sigma`, which is why the
+  LNR never had a start-point parameter, whereas a Uniform distance leaves a
+  shape the rate alone cannot produce. The threshold offset is pinned at 1
+  rather than `sigma` at 1 because rescaling the evidence axis shifts `nu` and
+  scales the range and the threshold but leaves a LogNormal rate's `sigma`
+  untouched, so `sigma` cannot pin the scale; `sigmabias` is therefore read in
+  units of the threshold offset. The density is a difference of two normal
+  CDFs and the survival one more, evaluated from a series below a start-point
+  range of about `1e-4 * sigma` and from ratios of log-CDFs in the tails, and
+  both agree with one-dimensional quadrature over the start point to `1e-7`.
+  `cogmod_priors()` fences the flat direction at zero the way it does for
+  `cogmod_lba1()`'s `sigmabias`, and `cogmod_inits()` starts it at 0.5.
+  A formula that omits `sigmabias` now estimates it, as `brms` does with any
+  dpar; fits made with earlier versions cannot be post-processed, because
+  their family carries no `sigmabias`, and have to be refit. In
+  `rcogmod_lnr()` and `dcogmod_lnr()` the argument sits between `ndt` (or
+  `response`) and `poutlier`, where the DDM keeps its between-trial
+  variabilities, so a call that passed `poutlier` by position needs it named.
+  The vignette LNR model pins it at zero and was refit.
 
-  Nothing about the density had to change for this to be exact - at
-  `sigmabias = 0` the existing Taylor branch evaluates to
-  `dnorm(b / t, mu, sigma) * b / t^2 / pnorm(mu / sigma)` to machine precision,
-  in R and in Stan alike - so the two models share one likelihood and
-  `loo_compare()` between them is like-for-like.
-
-  This matters beyond nesting. Estimating `sigmabias` freely is treacherous
-  precisely *because* the recinormal limit is smooth: the likelihood goes flat
-  as the start-point range shrinks, and `softplus` reaches zero only at minus
-  infinity, so `cogmod_priors()` has to fence the direction off. Pinning it at
-  zero removes the parameter instead, which is the honest option when the design
-  cannot identify a start-point range.
-
-  Note that **two** pins are now needed for the evidence scale, not one:
-  scaling multiplies every member of the scale ray by a common constant and
-  leaves zero at zero, so `sigmabias = 0` drops off the ray rather than pinning
-  it. `cogmod_stanvars()` says so explicitly when that is the only fix present.
-
-* New family **`cogmod_exwald()`** ([Schwarz, 2001](https://doi.org/10.3758/bf03195403)):
-  the decision time is a Wald convolved with an exponential residual stage of
-  mean `tau` - the mechanistic counterpart of `cogmod_exgaussian()`, whose first
-  stage is a descriptive Gaussian instead, with `tau` meaning the same thing in
-  both. The mean exists and is `ndt + boundary / mu + tau`, so
-  `posterior_epred()` returns a number.
-
-  The density has two branches, **both exact**. Where `mu^2 > 2 / tau` the
-  convolution collapses to a closed form in the Wald CDF; below that - which is
-  the common regime, since at a drift of 3 and a threshold of 0.5 the closed form
-  needs `tau > 0.22 s` - the same expression continues analytically through the
-  Faddeeva function, giving
-  `g * exp(-(boundary - mu * t)^2 / (2 * t)) * Re[w(z)]`. The exponent is the
-  Wald's own, so nothing overflows, and the branches meet exactly at
-  `mu^2 = 2 / tau`. Across a grid spanning the usual RT region the density
-  integrates to 1 to within 8e-12, the mean is right to 3e-9, and the relative
-  step across the branch seam is 5e-8.
-
-  Note there is deliberately no `sigmadrift`: it and `tau` both fatten the right
-  tail and are very hard to tell apart, and `cogmod_invgaussian()` is where the
-  drift-variability route lives. `ndt` and `tau` also share a ridge - both delay
-  the response, and only the shape of the leading edge separates them - so
-  `cogmod_priors()` gives `tau` the same `normal(-1.5, 0.7)` it gives
-  `cogmod_exgaussian()`. Fixing `ndt = 0` in `bf()` recovers Schwarz's own model.
-
-* New family **`cogmod_bisa()`**, the Birnbaum-Saunders or fatigue-life
-  distribution ([Birnbaum & Saunders,
-  1969](https://doi.org/10.2307/3212003)): a first-passage-time model in which
-  evidence arrives in **discrete cycles and only ever towards the boundary** -
-  what is random is the size of each increment, never its sign. Summing those
-  increments and applying the CLT, then treating the cycle count as continuous,
-  gives the first-crossing time.
-
-  It is parameterized mechanistically, as `mu` (drift) and `boundary`
-  (threshold), so it sits directly alongside `cogmod_invgaussian()` with the
-  parameters meaning the same thing and only the mode of accumulation differing.
-  Fixing the per-cycle SD at 1 is the same convention that fixes the Wald's
-  diffusion coefficient, and it makes `(mu * t - boundary) / sqrt(t)` **exactly**
-  standard normal - the usual `(1 / a) * (sqrt(t / b) - sqrt(b / t))` written in
-  these parameters, with `b = boundary / mu` and `a = 1 / sqrt(mu * boundary)`.
-  The map between the two is a bijection, so nothing is given up.
-
-  Everything is then closed form, and the density is the Wald's own tilted by
-  `(mu * t + boundary) / (2 * boundary)` - one sign apart from it. That tilt
-  makes the family an **equal mixture of an inverse Gaussian and its
-  length-biased twin**, so at the same `(mu, boundary)` it is slower and more
-  dispersed than the Wald (mean 0.222 s against 0.167, SD 0.184 against 0.136 at
-  `mu = 3, boundary = 0.5`), while keeping the same exponential-order right
-  tail. `E[T] = ndt + boundary / mu + 1 / (2 * mu^2)` is always finite, so
-  `posterior_epred()` returns a number, and the median is exactly
-  `ndt + boundary / mu`. There is no `sigmadrift`: the extra dispersion comes
-  from the mixture structure at no cost in parameters, and drift variability is
-  what `cogmod_invgaussian()` is for.
-
-  It is also the cheapest first-passage density in the package - one log and one
-  square, no branch and no special function - and `rcogmod_bisa()` is one normal
-  draw per observation, exact, with no rejection step.
-
-* New family **`cogmod_logstudent()`**: `log(RT - ndt)` follows a Student-t, a
-  robust LogNormal that varies kurtosis where `cogmod_loggamma()` varies skew.
-  The heavy tail absorbs slow contaminants into the likelihood rather than into
-  a mixture component, which matters because the `poutlier` component is a half
-  Normal and by construction cannot explain a slow response. At `dof = 5` the
-  probability of a decision time beyond 5 s is about five orders of magnitude
-  larger than the matching LogNormal's.
-
-  The degrees of freedom are called **`dof`**, not `nu`: `cogmod_lnr()` already
-  spends `nuzero`/`nuone` on drift rates, and `brms` recognises the name `nu`
-  and supplies defaults of its own for it.
-
-  Two things to know. **The mean does not exist** for any finite `dof`, so
-  `posterior_epred()` errors rather than returning a number; the median is exact
-  at `ndt + exp(mu)`. And **the density is unbounded at `ndt`** - integrable, so
-  the posterior stays proper, but the likelihood has no maximum, which is one
-  more reason `cogmod_priors()` is not optional. A Student-t is also symmetric
-  on the log scale, so a small `dof` fattens the fast tail as well as the slow
-  one and competes with `poutlier`; `cogmod_priors()` centres `dof` at 6 with
-  95% of its mass between 1.5 and 24 to keep that in check.
-
-* `cogmod_priors()` now supports **`cogmod_exgaussian()`**, where before it
-  returned the `brms` defaults with a message. `sigma` and `tau` are both
-  lengths of time in seconds behind a `softplus` link, which `brms` has no way
-  to know: `tau` arrives flat, and `sigma` arrives with the
-  `student_t(3, 0, 2.5)` that `brms` supplies because it recognises the *name* -
-  a Gaussian SD centred on 0.69 s modelled, 1.9 s omitted, wider than most whole
-  RT distributions. They now get `normal(-2.3, 0.7)` and `normal(-1.5, 0.7)` on
-  the link scale (roughly 25-330 ms for `sigma`, 55-630 ms for `tau`), and the
-  matching `lognormal` when the dpar is left out of `bf()` altogether. `mu` is
-  deliberately untouched: it is the response's own intercept and the `brms`
-  default is already proper and reasonable there.
-
-* `cogmod_invgaussian()` gains **`sigmadrift`**, the between-trial SD of the
-  drift rate. Above zero, each trial draws its own drift from a
-  `Normal(mu, sigmadrift)` truncated at zero, which is what lets the Wald
-  reach the long right tails empirical RT distributions have. Marginalising
-  over that draw is a Gaussian integral, so the density stays closed form and
-  costs two normal CDFs; `sigmadrift = 0` gives back the previous density
-  exactly, not approximately.
-
-  The truncation is what keeps the density proper: a single-boundary
-  accumulator handed a negative drift never terminates, so an untruncated
-  Normal would leave up to a third of the mass unaccounted for.
-  `cogmod_ddm()`'s `sigmadrift` needs no such truncation, a diffusion between
-  two boundaries always absorbing at one of them.
-
-  It is fixed the same way as the `cogmod_ddm()` variability parameters -
-  writing `sigmadrift = 0` in `bf()` pins it and recovers the classic Wald,
-  while leaving it out of `bf()` *estimates* it. Fixing it is the better
-  default: `sigmadrift` and `poutlier` both fatten the right tail and are only
-  weakly distinguishable, and `cogmod_priors()` gives `sigmadrift` a
-  deliberately informative prior where it is estimated. Note that with
-  `sigmadrift > 0` the density decays as `t^-2` and **the mean does not
-  exist**, so `posterior_epred()` returns `Inf`; summarise
-  `posterior_predict()` draws instead.
-
-  Two consequences for existing code. The `drift`/`boundary`/`ndt`/`poutlier`
-  functions gained an argument, so `sigmadrift = 0` now sits between `ndt` and
-  `poutlier` in the signatures of `rcogmod_invgaussian()`,
-  `dcogmod_invgaussian()` and `pcogmod_invgaussian()` (positional calls that
-  passed `poutlier` fourth need updating; named calls are unaffected). And a
-  formula that does not mention `sigmadrift` at all now estimates it rather
-  than fitting the fixed-drift Wald.
-
-* New `cogmod_stanvars()`: the third of the three generics that take the model
-  rather than the family, alongside `cogmod_priors()` and `cogmod_inits()`. It
-  reads the family off the formula and returns that family's Stan code, so the
-  family is named once - in `bf()` - instead of three times:
-
-  ```r
-  f <- bf(RT ~ Condition, ndt ~ Condition, family = cogmod_lognormal(minrt = 0.25))
-  brm(f, data = df,
-      prior    = cogmod_priors(f, df),
-      init     = cogmod_inits(f, df),
-      stanvars = cogmod_stanvars(f))
-  ```
-
-  This is not only tidier. `minrt` is baked into the generated Stan code as a
-  literal, because a Stan function cannot see the data block, so
-  `cogmod_lognormal(minrt = 0.25)` fitted with `cogmod_lognormal_stanvars()` runs
-  happily against an outlier component the family does not describe.
-  `cogmod_stanvars()` takes `minrt` off the family, and the two cannot
-  disagree. The per-family `<family>_stanvars()` functions are unchanged.
-
-* `cogmod_inits()` now supports `cogmod_exgaussian()`, whose three parameters are
-  all on the RT scale behind a `softplus` link and so are equally badly served
-  by the default start at `log(2) = 0.69` s - which makes the Gaussian SD alone
-  wider than most whole RT distributions.
-
-* `cogmod_inits()` now returns a value for **every** parameter the Stan program
-  declares, not only the ones it has an opinion about, so CmdStan no longer
-  prints `Init values were only set for a subset of parameters` and lists the
-  rest. Regression slopes and standardized group-level effects start at zero,
-  group-level and spline SDs just above zero, Cholesky factors at the identity;
-  all are at least as good a starting point as Stan's own `U(-2, 2)`.
-
-  Two related fixes come with it. Links are now read off the family rather than
-  the registry, so `cogmod_gamma(link_mu = "log")` is honoured. And the jitter is
-  applied on the unconstrained scale - additive when free, multiplicative for a
-  positive parameter, on the logit scale for a bounded one - so a jittered
-  start can no longer land outside its own bounds, which it could previously
-  for a dpar left out of the formula and estimated on the natural scale.
-
-* New `cogmod_inits()`: starting values for the families that estimate `ndt`
-  directly. `brms` initialises on the unconstrained scale, so `init = 0` puts
-  `ndt` at `exp(0) = 1` second - above most sub-second RTs, which leaves every
-  response attributed to the outlier component and the decision parameters with
-  no gradient at all. For `cogmod_gamma()` and `cogmod_weibull()` it *also* puts the
-  shape at `softplus(0) = 0.69`, below the 1 at which the density becomes
-  unbounded at the shift. No single scalar avoids both, since the two pull in
-  opposite directions.
-
-  On 1500 simulated Gamma trials (true shape 3, true `ndt` 0.25), `init = 0`
-  left the shape stuck at its starting value with `Rhat` 2.3 and an ESS of 3
-  after 306 s; `cogmod_inits()` recovered shape 3.23 and `ndt` 0.227 with
-  `Rhat` 1.01 in 28 s. An informative prior on the shape did not rescue
-  `init = 0` - a prior cannot move a chain whose gradient is zero.
-
-  Parameter names are read off `brms::make_stancode()` for the model actually
-  being fitted, so `0 + Intercept`, interactions, group-level terms and smooths
-  are all handled; anything it does not recognise is left to Stan.
-
-* New `cogmod_loggamma()` family: a shifted Log-Gamma model for reaction times,
-  equivalently a shifted generalized gamma. `log(RT - ndt)` follows a
-  location-scale log-gamma with location `mu`, scale `sigma` and shape `shape`,
-  and `ndt` / `poutlier` / `minrt` work exactly as in `cogmod_lognormal()`.
-
-  `shape` is unconstrained, with `shape = 0` in the interior: it recovers
-  `cogmod_lognormal()` exactly, `shape = sigma` the shifted Gamma, `shape = 1` the shifted
-  Weibull and `shape = -1` the shifted inverse Weibull. Fitting it is therefore a
-  way of testing whether the LogNormal shape is adequate - an interval for `shape`
-  covering 0 says it is. Negative `shape` gives a power-law right tail.
-
-  Note the boundary at `sigma * shape >= 1`, where the decision density becomes
-  unbounded at `ndt` and the likelihood with it; `cogmod_priors()` sets
-  `normal(0, 0.5)` on the `shape` intercept to keep well clear of it.
-
-  **Fit this family with `init = 0`.** The prior keeps the posterior clear of
-  that boundary but not the starting point: `brms` initialises from `U(-2, 2)`
-  on the unconstrained scale, so about 15% of chains start with
-  `sigma * shape >= 1`, fall into the spike at `ndt` and never finish. `init = 0`
-  starts every chain at `shape = 0`, the LogNormal, and removes the problem.
-
-* `with_outliers()`, `without_outliers()`, `p_outlier()` and `cogmod_priors()`
-  now work on `cogmod_loggamma()` as well as `cogmod_lognormal()`.
-
-* `cogmod_stanvars()` now **warns when the evidence scale is left free** for
-  `cogmod_lba1()` and `cogmod_lba2()`. Both have a likelihood that is *exactly*
-  constant along the ray that multiplies the drift rates, their SDs, the
-  start-point range and the threshold offset by a common factor - verified to
-  machine precision, not merely near-flat - so nothing in the data can pick a
-  point on it. The failure is quiet rather than loud: the fit converges,
-  `pp_check()` looks right, and only the individual parameter estimates are
-  meaningless, being whatever the priors happen to say about that direction.
-
-  Fixing any one member of the ray in `bf()` pins it and silences the warning -
-  `sigmazero = 1` conventionally, as `rtdists` and `EMC2` both do, but
-  `boundary = 1` or `sigmabias = 0.5` work as well. Note that leaving a
-  parameter *out* of `bf()` does not fix it: `brms` declares it as a free
-  auxiliary parameter and the ray stays exactly as free, which is the case the
-  warning mostly exists to catch. `cogmod_rdm()` and `cogmod_ddm()` are quiet
-  by construction, their unit diffusion coefficient having pinned the scale
-  already.
+* **`cogmod_priors()` gains `warmstart`**, which re-centres the priors on a
+  previous fit: every population-level intercept and coefficient, every
+  group-level SD, and every dpar left out of the formula gets
+  `normal(median, prior_scale * sd)` from that fit's posterior, matched
+  parameter by parameter on the `class`, `dpar`, `coef` and `group` a
+  `get_prior()` row carries. No transformation is involved - the parameter a
+  prior row is about is the parameter the source sampled, the `Intercept`
+  prior being stated on the centred intercept in both - so the scales line up
+  by construction. `cogmod_warmstart()` extracts the posterior median and SD
+  alongside the means for this, `as.data.frame()` carries them in two new
+  columns, and a table written before they existed still reads (the priors are
+  then left alone, with a message). The correlations keep their LKJ and the
+  standardized effects have no stated prior to change.
+  **Unlike the rest of the warm start, this changes the posterior**, and if
+  the source was fitted to data the new model also contains it double-counts
+  it - a pilot on half the participants used to centre the priors for the fit
+  on all of them uses that half twice. `prior_scale`, 3 by default, is what
+  stands between a prior that only says roughly where the parameter lives and
+  one that is the source's posterior outright; `?cogmod_priors` says when the
+  argument is and is not legitimate.
 
 ## Bug fixes
 
-* `cogmod_ddm()` no longer reports `Non-finite gradient` during warmup or a
-  Pathfinder search, and no longer collects the divergent transitions that come
-  with it. Stan's classic 4-parameter `wiener_lpdf()` - much the fastest of the
-  three Wiener densities Stan offers, and the one this family used whenever the
-  three between-trial variability parameters were zero - returns `-inf` in two
-  regions, and hands back **NaN** partial derivatives when it does. A NaN
-  partial is not made harmless by the mixture weight on it being zero:
-  reverse-mode multiplies the (zero) adjoint into the stored partial, and
-  `0 * NaN` is `NaN`, so a single trial in one of those regions turns the
-  gradient of the whole model to NaN, and Stan rejects the proposal.
+* **`cogmod_rdm()` no longer freezes one chain in four on a cold start.**
+  `cogmod_inits()` started both drifts at 3; the error accumulator now starts
+  at 1. The failure looked like a stuck chain - every transition at the
+  maximum treedepth, step size a thousand times smaller than the other
+  chains', Rhat 1.5 to 2.9 - and it was traced to the very first warmup
+  transition. A Wald density is thin on the fast side and flat on the slow
+  side, so on data whose error drift is about 0.2 (the speed-accuracy data of
+  `vignette("performance")`) the old start sat 400 log-density units above
+  the posterior. The first trajectory converted that into momentum along the
+  flat `driftone` direction (the plateau `cogmod_priors()` fences, where the
+  likelihood no longer changes) and carried the chain from a link value of +3
+  to -20 in eight leapfrog steps; the step size then collapsed to 1e-5 within
+  a dozen iterations and the metric windows that followed were estimated from
+  a chain that no longer moved. Stan's model methods found nothing numerical
+  at the frozen position - the log-density and its gradient are smooth across
+  the driftless branch of the survival function, and finite differences agree
+  with autodiff - so the fix is where the chain starts, not what it computes.
+  On an 800-trial mixed model with a 200-iteration warmup the old start
+  froze a chain in 1 run in 4 with Stan's default metric and in 5 of 6 when
+  handed a metric adapted to the bulk (4 of 4 when the benchmark cell was
+  rerun); the new start has done so in 0 of 6 under the latter, the harder
+  case, and each such fit ran in 3 minutes instead of 30. When the error accumulator really is as fast as the correct
+  one the start is off by a factor of three on the cheap side, which costs a
+  few dozen units and changes nothing.
 
-  The two regions are the alternating small-time series losing its sum to
-  cancellation - which depends only on the rescaled decision time
-  `tau = t / boundary^2`, not on the drift or the scale separately, and sets in
-  below `tau = 6.6e-4` - and the density underflowing to zero, which a cheap
-  leading-term estimate detects. Those calls now go to Stan's `sv`-capable
-  density instead, which works in log space throughout and stays finite, with
-  finite gradients, down to log-densities of `-1e7`. The two agree to `1e-13`
-  where the paths meet, so there is no step in the likelihood, and the fast path
-  still handles the overwhelming majority of evaluations.
-
-  On the 2000-trial fit in `?cogmod_ddm`, over three seeds: 16 `Non-finite
-  gradient` reports per Pathfinder run became 0, and 47-420 divergent
-  transitions per NUTS run became 0. Sampling is about 35% slower per iteration
-  and roughly two to a hundred times *better* per effective sample.
-
-  The same guard is applied to the general 7-parameter form, used when
-  `sigmabias` or `sigmandt` is nonzero, which fails the same way. There it
-  returns the `-inf` that form would have returned anyway, but as a constant,
-  which carries no partial derivatives.
-
-* The test suite runs in a third of the time (2472 s to 968 s on Windows).
-  Every family's Stan `lpdf` now goes into **one** model, compiled once per
-  session, instead of nine separate `*_lpdf_expose()` compilations; the
-  factorial parameter sweeps are thinned to subsets that still cover every level
-  of every factor; and the six `brms::brm()` model fits are behind
-  `COGMOD_TEST_SLOW`, which the CI workflow sets. Setting it locally runs them:
-
-  ```r
-  Sys.setenv(COGMOD_TEST_SLOW = "true"); devtools::test()
-  ```
-
-  The shared model also removes a trap the RDM tests had worked around with a
-  cache of their own: `expose_functions()` fails on a model `cmdstan_model()`
-  returns pre-compiled, so a second call in the same session errors rather than
-  reusing the first.
-
-* `cogmod_priors()` now covers `cogmod_lnr()`'s `nuone`, `sigmazero` and
-  `sigmaone`, which it previously left flat. Push an accumulator's rate down far
-  enough and it stops finishing first ever; the density then depends on it only
-  through the loser's survival term, which has already saturated at 1. Past
-  about `nuone = -6` the log-likelihood is *exactly* constant, and that
-  accumulator's `sigma` is unidentified along with it. The outlier component
-  makes this reachable rather than hypothetical: it floors the trials the
-  retreating accumulator can no longer explain, so the plateau is there even
-  when both responses are observed.
-
-  `nuone` gets `normal(0.7, 1.5)` on its identity link, the two sigmas
-  `normal(0, 1)` on softplus (`lognormal(-0.7, 0.75)` when omitted from `bf()`
-  and so on the natural scale), and all three `normal(0, 0.5)` on slopes. `mu` -
-  which is `nuzero` - has the mirror-image plateau, but it is the response's own
-  intercept and `brms` already gives it a proper `student_t` default, so it is
-  left alone; if you model a rarely-chosen option it is worth mirroring the
-  `nuone` prior onto it by hand.
-
-  `cogmod_inits()` already covered this family and is unchanged.
-
-* `cogmod_priors()` now covers `cogmod_lba1()`'s `sigmabias` and `boundary`,
-  which it previously left on `brms`'s flat default. As the start-point range
-  approaches zero the LBA converges smoothly to the recinormal, so the
-  likelihood stops depending on `sigmabias` altogether - and a `softplus` link
-  reaches zero only at minus infinity. That is a flat prior over an infinite
-  flat region, the same improper posterior the function already exists to
-  prevent for `ndt` and `poutlier`, and it failed just as quietly: on the
-  4285-trial fit in `vignette("rt_models")`, `sigmabias` for one condition ran
-  off to `softplus(-10.4) = 3e-05` with `Rhat` 1.69 and an effective sample size
-  of 6, while every other parameter looked healthy. With the priors in place the
-  same fit gives `Rhat` 1.02, an effective sample size of 387, no
-  maximum-treedepth hits, and a finite estimate. `boundary` is covered too,
-  since `b = sigmabias + boundary` puts the two on the same ridge.
-
-  Both get `normal(0, 1)` on the link scale, `lognormal(-0.7, 0.75)` when the
-  dpar is omitted from `bf()` and so lives on the natural scale, and
-  `normal(0, 0.5)` on slopes - wider than the blanket `normal(0, 0.2)` the other
-  dpars take, because the point is to fence off zero rather than to shrink
-  effects. Families can now declare such rows in the registry, so the next one
-  that needs them does not need a special case.
-
-* The `?rcogmod_weibull` and `?rcogmod_gamma` notes about the shape were
-  understated. They said the density is unbounded at `ndt` for a shape below 1,
-  which is true, but the threshold that matters in practice is **2**: below it
-  the derivative of the log-likelihood with respect to `ndt` is unbounded at
-  every observation, so the posterior stays proper while the sampler grinds. On
-  the data in `vignette("rt_models")` the Weibull shape comes out at 1.4, `ndt`
-  lands inside the dense left edge of the data, the step size collapses to 0.005
-  against 0.19 for `cogmod_lognormal()`, and mean treedepth goes from 3.9 to
-  8.1 - 19x the gradient evaluations and 19x the wall time, with `Rhat` 1.18 on
-  `ndt`. The density is cheap; all of the cost is geometry. Both help pages now
-  set out the three regimes and say to prefer `cogmod_loggamma()`, which nests
-  the Weibull at `shape = 1`, when the shape comes out below 2.
-
-  No prior is set on those shapes, deliberately, and none is set on `ndt`
-  either. Every obvious remedy was tried on that fit and measured:
-
-  - `normal(2.4, 0.4)` on the shape (softplus scale, 95% of its mass above a
-    shape of 1.9) moved the posterior shape by 0.01. The likelihood prefers the
-    low-shape corner by around 100 log units; the prior contributes 5.
-  - `normal(-1.25, 0.05)` on `ndt`, centred below the fastest bulk response,
-    left the posterior 6.5 prior SDs away at essentially its unconstrained
-    value. The `ndt` likelihood has a posterior SD of 0.003, some fifteen times
-    sharper than that prior. The attempt cost 4% divergent transitions against
-    0.5%, 16% of iterations at maximum treedepth against 7%, `Rhat` 1.43 against
-    1.18, and a slightly worse `loo`.
-  - Fixing `ndt` at the fastest observed response does remove the problem, by
-    removing the parameter - and reinstates the min-RT bound this
-    parameterization exists to remove. On these data the fastest response is
-    71 ms, which is not a decision.
-
-  Note what is *not* wrong: `ndt` and the shape are jointly identified, sharply
-  (posterior SD on `ndt` of 3 ms), so this is not two parameters trading off
-  with nothing to separate them and pinning one is not the missing ingredient.
-
-  The slow sampling and a poor fit turn out to be the same fact. Across the ten
-  families fitted in `vignette("rt_models")` the Weibull comes **last** by
-  `loo` - 196 elpd (SE 21) behind `cogmod_loggamma()`, and 95 behind the next
-  worst. What the sampler struggles with is the model contorting itself to
-  represent a left edge it cannot otherwise reach. Where the shape comes out
-  above 2 the family is fine, as `cogmod_gamma()` is on these same data at 2.2;
-  a shape below 2 is best read as the model asking for a different one.
-
-  Under the older `ndt = tau * min(RT)` parameterization the same singularity
-  was damped by the logit Jacobian vanishing as `tau` approached 1, which is why
-  it only became visible once `ndt` was estimated directly.
-
-* `cogmod_priors()` no longer leaves `brms` warning that a global `b` prior
-  "will not be used in the model as all related coefficients have individual
-  priors already". It set both the blanket row and the row for the coefficient
-  named `Intercept`, which is right when there are slopes beside the intercept
-  but leaves the blanket row covering nothing under `ndt ~ 0 + Intercept`. The
-  pair is now checked in both directions.
-
-* `cogmod_lognormal()` and `cogmod_loggamma()` also carried hand-written R
-  copies of the shared mixture - their own `r*()`, `d*()`, `.prepare_*()`,
-  `log_lik_*()`, `posterior_predict_*()` and `posterior_epred_*()`, about 420
-  lines reproducing what the other seven families delegate. All of it now
-  delegates too, verified bit-identical to the code it replaced before the
-  change was made.
-
-* `cogmod_lognormal()` and `cogmod_loggamma()` generated their Stan code from
-  hand-written copies of the shared mixture rather than from the registry every
-  other shifted family uses. The copies had drifted: the LogNormal one described
-  its outlier scale as `0.8 * minrt` when it is `minrt`, and neither carried the
-  folded normalising constant that makes the outlier term ~1.4x cheaper per
-  gradient evaluation. Both now come from the one generator, verified against
-  the R density to machine precision.
-
-* `cogmod_priors()` now also covers dpars left out of `bf()` entirely. `brms`
-  declares those as plain auxiliary parameters - class `"<name>"` with an empty
-  `dpar`, on the natural scale with no link - so matching on `dpar` alone missed
-  them and they kept `brms`'s own defaults. Those defaults are actively wrong
-  here: `uniform(0, min_Y)` on `ndt` reimposes the very min-RT bound the
-  parameterization exists to remove, `gamma(0.01, 0.01)` on `shape` has support
-  only on the positives and would silently truncate away the inverse-Weibull
-  half of the family, and `poutlier` was left flat over `[0, 1]` with half its
-  mass above 0.5. All three are now replaced, with priors on the natural scale:
-  `lognormal(-1.2, 0.2)`, `normal(0, 0.5)` and `exponential(100)`.
-
-  The `poutlier` prior for the omitted case has its mode at **zero**, unlike its
-  modelled counterpart: leaving it out of the formula is taken to mean the data
-  were trimmed or no outliers are expected. Its median is unchanged.
+* **`cogmod_inits()` now starts `ndt` at half the first percentile of the
+  observed response times instead of a fixed 0.1 s.** Same mechanism as the
+  previous item, other cold start. The fixed value was a third of the prior
+  median and safely below any ordinary data, which was the whole argument for
+  it; on data whose non-decision time is 0.6 s it sat half a second low, every
+  decision time looked far too long, a driftless race then fit better than a
+  fast one, and the first trajectory of a cold `cogmod_rdm()` chain threw
+  both drifts onto their flat regions - three chains in four on the
+  benchmark's `shifted` target when handed a metric adapted to the bulk. Half
+  the first percentile is still below essentially every response, so the
+  gradient the small start was protecting is intact, and it follows the scale
+  of the data. Every `ndt` + `poutlier` family gets it. Starting values do
+  not change a posterior, so no fitted model needs revisiting for this.
 
 ## Breaking changes
 
-* **Every family is renamed to a single `cogmod_*` scheme.** `rt_lognormal()` is
-  `cogmod_lognormal()`, `lnr()` is `cogmod_lnr()`, `ddm()` is `cogmod_ddm()`, and
-  so on; the two LBAs are told apart by their accumulator count, so `rt_lba()`
-  (no choice) is `cogmod_lba1()` and `lba()` (two choices) is `cogmod_lba2()`.
-  Every derived function follows its family: `rrt_lognormal()` is
-  `rcogmod_lognormal()`, `rlnr()` is `rcogmod_lnr()`,
-  `rt_lognormal_stanvars()` is `cogmod_lognormal_stanvars()`, and likewise for
-  the densities, the `*_lpdf_expose()` and the `brms` post-processing hooks.
+* **The default `ndt` prior is wider: `normal(-1.2, 0.5)` on the log scale,
+  `lognormal(-1.2, 0.5)` for an omitted `ndt`, in place of the `0.2` SD.**
+  The centre is unchanged at 0.30 s; 95% of the mass now sits between about
+  0.11 and 0.80 s instead of 0.20 to 0.44 s. The old SD put a 0.6 s
+  non-decision time - not unusual for older participants or more demanding
+  responses - 3.5 SDs from the centre, and on the warm-start benchmark's
+  `shifted` target (`vignette("performance")`), whose non-decision time is
+  about 0.6 s, `cogmod_rdm()` produced divergent transitions in every run
+  with that prior, the 600-warmup reference included; the wider prior removed
+  them (Rhat 1.06 and a minimum ESS of 67 became 1.01 and 392 on the same
+  seed). The prior's job is to fence the `ndt -> 0` direction, where the
+  likelihood goes flat and a flat prior would make the posterior improper; at
+  0.5 it still does (0.01 s is 6.8 SDs out) without telling the data where in
+  0.1 to 0.8 s the non-decision time is. Fits with the default priors will
+  move slightly, most where the data put `ndt` far from 0.30 s, which is
+  where they should have been free to move. Every `ndt` + `poutlier` family
+  is affected.
 
-  Two things were wrong with the old names. `lba()`, `lnr()`, `ddm()`, `rdm()`
-  and `choco()` are generic enough to collide with anything else attached, and
-  the `rt_` prefix said "reaction time" on families that are not all RT-only.
-  One prefix fixes both, and `cogmod_` tab-completes the whole package.
-
-  **The old names all still work** in this version, as exact synonyms rather
-  than wrappers - the `brms` hooks included, so a model fitted before the rename
-  can still be summarised. (They were removed in 0.3.0.)
-
-* **The `bs` dpar is renamed `boundary`** in `cogmod_invgaussian()`,
-  `cogmod_lba1()`, `cogmod_lba2()`, `cogmod_rdm()` and `cogmod_ddm()`. This is not
-  cosmetic: `brms` names the unpenalized spline coefficients of a model `bs`, so
-  any of those families combined with a smooth failed to compile with
-  `Identifier "bs" is already in use`. There is no alias for a dpar name - update
-  `bs ~ ...` to `boundary ~ ...` in formulas, `bs = ` to `boundary = ` in the
-  `r*()`/`d*()` calls, and expect `boundary_Intercept` where you had
-  `bs_Intercept` in the output.
-
-  Fits made before this change cannot be post-processed, because their draws
-  carry the old dpar name; refit them.
-
-* **`cogmod_lnr(link_nuzero = )` is now `link_mu`.** `brms` requires the first
-  distributional parameter of a custom family to be called `mu`, so `mu` is what
-  the formula uses and what the argument now matches; `nuzero` remains the name
-  of the quantity, in the prose and in `rcogmod_lnr()`/`dcogmod_lnr()`.
-
-* **The `r*()` and `d*()` functions of every shifted family now validate their
-  decision parameters**, against the same bounds the generated Stan code checks.
-  Only `cogmod_lognormal()` and `cogmod_loggamma()` did this before; the other
-  seven silently returned zero density or `NaN` draws for, say, a negative
-  `sigma`. `r*()` errors, `d*()` warns and returns zero - so a single bad
-  posterior draw still cannot abort a whole call.
-
-* **`cogmod_invgaussian()`, `cogmod_gamma()`, `cogmod_invgamma()`, `cogmod_weibull()`,
-  `cogmod_invweibull()` and `cogmod_logweibull()` now use the same parameterization as
-  `cogmod_lognormal()`**: `tau` and the `minrt` *dpar* are gone, replaced by `ndt`
-  estimated directly (log link) plus `poutlier`, with `minrt` carried on the
-  family as a constant. Every one of them gains an outlier component, and
-  `with_outliers()`, `without_outliers()`, `p_outlier()` and `cogmod_priors()`
-  now work on all eight families.
-
-  Update models as for `cogmod_lognormal()`: replace `tau ~ ...` with `ndt ~ ...`,
-  drop `minrt = min(df$RT)`, and add `poutlier ~ 1`. `ndt` coefficients are on
-  the log scale.
-
-  The `d*()`/`r*()` functions gain `poutlier` and `minrt` arguments, and
-  `rcogmod_gamma()`, `dcogmod_gamma()`, `rcogmod_invgamma()`, `dcogmod_invgamma()`,
-  `rcogmod_weibull()`, `dcogmod_weibull()`, `rcogmod_invweibull()`, `dcogmod_invweibull()`,
-  `rcogmod_logweibull()` and `dcogmod_logweibull()` are new - those families previously
-  had no R-level density or RNG at all. `pcogmod_invgaussian()` now returns the
-  mixture CDF.
-
-  Note that `cogmod_gamma()` and `cogmod_weibull()` have an unbounded density at `ndt`
-  whenever their shape falls below 1, which the outlier component cannot repair;
-  fit them with `init = 0`. `cogmod_loggamma()` nests both and lets the data choose
-  the shape instead.
-
-* **`cogmod_lba1()`** moves to the same parameterization: `tau` and the `minrt` dpar
-  are replaced by `ndt` (log link) plus `poutlier`, with `minrt` a family
-  constant. `rcogmod_lba1()` and `dcogmod_lba1()` gain `poutlier` and `minrt`.
-  `posterior_epred_cogmod_lba1()` now explains *why* there is no expectation rather
-  than calling it prohibitive: the decision time is `(b - U(0, A)) / drift` with
-  a drift truncated at zero, whose density is positive at 0, so `E[1 / drift]`
-  diverges and the mean does not exist.
-
-* All nine shifted families are now generated from a single internal registry,
-  so the Stan code, the R density, the RNG, the likelihood and the predictions
-  cannot drift apart. Verified family by family: Stan agrees with R to machine
-  precision, each density integrates to 1, and each RNG reproduces its own
-  density.
-
-* **`cogmod_lnr()` moves to the same `ndt` + `poutlier` parameterization as the
-  RT-only families.** `tau` and the `minrt` *dpar* are gone; `ndt` is estimated
-  directly, on the log link, and `minrt` is a constant carried on the family
-  object rather than something `tau` is scaled by. `with_outliers()`,
-  `without_outliers()`, `p_outlier()`, `cogmod_priors()` and `cogmod_inits()`
-  all work on it now.
-
-  Because the LNR produces a **choice as well as a time**, its outlier
-  component is not quite the RT-only one: the contaminant guesses uniformly
-  over the two response options in addition to drawing an RT from the same
-  half Student-t, so the mixture is `poutlier * (1/2) * g(t) + (1 - poutlier)
-  * f_k(t - ndt)`. The `1/2` is what keeps the joint density summing to one
-  over both responses - without it the total comes to `1 + poutlier`.
-
-  Update models as for `cogmod_lognormal()`: replace `tau ~ ...` with
-  `ndt ~ ...`, drop `minrt = min(df$RT)` from `bf()`, and add `poutlier ~ 1`.
-  Fit with `init = cogmod_inits(f, df)` rather than `init = 0` - on the log
-  link, `init = 0` starts `ndt` at `exp(0) = 1` second, above nearly every
-  sub-second RT, which leaves every response attributed to the outlier
-  component and the race parameters with no gradient at all.
-
-  `rcogmod_lnr()` and `dcogmod_lnr()` gain `poutlier` and `minrt` arguments.
-  Verified against the RT-only families' checklist: the joint density sums to
-  one over both responses and integrates to one over time (with and without
-  the `1/K` term, to confirm it is load-bearing), the Stan `cogmod_lnr_lpdf`
-  agrees with the R density to machine precision, and a simulated fit recovers
-  `ndt` well above the fastest observed response.
-
-* **`cogmod_rdm()` moves to the same `ndt` + `poutlier` parameterization**, on
-  the same shared machinery as `cogmod_lnr()`. `tau` and the `minrt` *dpar* are
-  gone: the family's dpars are now `mu`, `driftone`, `sigmabias`, `boundary`,
-  `ndt`, `poutlier`, `ndt` is estimated directly on the log link, and `minrt` is
-  a constant carried on the family object. `with_outliers()`,
-  `without_outliers()`, `p_outlier()`, `cogmod_priors()`, `cogmod_inits()` and
-  `cogmod_stanvars()` all work on it now.
-
-  Update models as for `cogmod_lnr()`: replace `tau ~ ...` with `ndt ~ ...`,
-  drop `minrt = min(df$RT)` from `bf()`, and add `poutlier ~ 1`. Fit with
-  `init = cogmod_inits(f, df)` rather than `init = 0` or `init = 0.5`.
-
-  `cogmod_priors()` also supplies the `sigmabias` / `boundary` priors that
-  `?cogmod_rdm` previously told you to write by hand: the two enter the model
-  only through the sum `b = boundary + sigmabias` and trade off along a ridge
-  worth a handful of log units, which under a flat prior and a `softplus` link
-  is an improper posterior. The drift rates are left flat on purpose - unlike
-  `cogmod_lnr()`'s `nuone`, a drift pushed to zero does not produce a plateau,
-  because a driftless accumulator still finishes and still wins sometimes.
-
-  `rcogmod_rdm()` and `dcogmod_rdm()` gain `poutlier` and `minrt` arguments,
-  and `pcogmod_rdm()` gains `poutlier` and `minrt` too - its CDF is now the
-  mixture's, and still keeps the far-tail survival in log space. `dcogmod_rdm()`
-  keeps its `response = NULL` marginal, which is now the sum of the two
-  defective mixture densities. Invalid parameters now warn and return a zero
-  density rather than erroring, matching the other mixture families. **A drift
-  of exactly zero is still accepted** - it is the one closed lower bound in
-  either registry, because driftless Brownian motion still reaches the
-  threshold with probability one.
-
-  Verified against the checklist: the joint density sums to one over both
-  responses and integrates to one over time for several parameter sets and
-  `poutlier` values (including as the start-point range shrinks to `1e-6`), the
-  Stan `cogmod_rdm_lpdf` agrees with the R density across the parameter grid,
-  and a simulated fit recovers `ndt = 0.256` against a true `0.25` - some 200
-  times the fastest observed response, which the old `tau * minrt` bound could
-  not have expressed.
-
-* **`cogmod_lba2()` moves to the same `ndt` + `poutlier` parameterization.**
-  Its dpars are now `mu`, `driftone`, `sigmazero`, `sigmaone`, `sigmabias`,
-  `boundary`, `ndt`, `poutlier`. Update models as for `cogmod_lnr()`: replace
-  `tau ~ ...` with `ndt ~ ...`, drop `minrt = min(df$RT)` from `bf()`, and add
-  `poutlier ~ 1`.
-
-  Two long-standing bugs in the density came out with it.
-
-  **The density was not normalised.** A normal drift rate can come out negative,
-  and such an accumulator never reaches the threshold, so a trial on which
-  *both* drifts are negative produces no response at all. `rcogmod_lba2()` has
-  always resampled until at least one is positive - but `dcogmod_lba2()` never
-  divided by the probability of that event, so the density integrated to the
-  probability rather than to one. At drift rates of `0.5` and `0.2` with SDs of
-  `1.5` it came to `0.83`, and the simulated choice proportion was `0.562`
-  against an integral of `0.468`. Because the shortfall depends on the
-  parameters, it biased estimates rather than merely offsetting the likelihood.
-  Both the R and the Stan densities now condition on the event the process is
-  conditioned on.
-
-  **The `(1 / A)` cancellation `cogmod_lba1()` was fixed for was still here.**
-  The defective density divides `drift * (Phi(z2) - Phi(z1)) + sigma * (phi(z1)
-  - phi(z2))` by the start-point range, and both differences vanish linearly in
-  it; the loser's survival was computed as `1 - CDF`, which cancels the same way.
-  Relative error reached 2.7% at `sigmabias = 1e-5` and 320% at `1e-7`. Both now
-  go through the kernels `cogmod_lba1()` already uses (`.lba_dens_over_A()`, and
-  a new `.lba_surv_raw()` that takes the survival directly rather than as
-  `1 - CDF`), which the two families now share in R and in Stan.
-
-  The `.Machine$double.eps` floor is gone too. It turned every RT below the
-  point where the density becomes representable into a log-density of exactly
-  `-36.04` - a constant the model never produced, with a gradient of zero. Where
-  the density really has underflowed the log-density is now `-Inf`, and the
-  outlier component is what keeps the *mixture* finite there.
-
-  `rcogmod_lba2()` now imposes the positive-drift condition **exactly**, by
-  sampling which accumulator is positive and then the truncated normals, instead
-  of a rejection loop. Its `max_iter` argument is therefore gone, along with the
-  fallback that forced a drift positive with `abs()` - and so drew from the
-  wrong distribution - whenever the loop ran out.
-
-  Note that the evidence scale of an LBA is **arbitrary**: multiply the drifts,
-  their SDs, the start-point range and the threshold by any `c > 0` and every
-  finishing time is unchanged, so the likelihood is exactly constant along that
-  ray. `cogmod_priors()` now fences all four positive parameters, which makes
-  the posterior proper, but only fixing one SD in the formula
-  (`sigmazero = 1` in `bf()`) identifies the scale. This was true before and is
-  now documented.
-
-* **`cogmod_ddm()` moves to the same `ndt` + `poutlier` parameterization**, and
-  **`sigmatau` is renamed `sigmandt`**. Its dpars are now `mu`, `boundary`,
-  `bias`, `sigmadrift`, `sigmabias`, `sigmandt`, `ndt`, `poutlier`.
-
-  `sigmatau` was the between-trial range of the non-decision time expressed as a
-  fraction of `minrt` (`st0 = sigmatau * minrt`). With `tau` and the `minrt`
-  dpar both gone it was named after a parameter that no longer exists and scaled
-  by a constant the user no longer sees, so it is now **`sigmandt`**, which is
-  `st0` itself, in the same unit as the data, on a log link - `ndt` remains the
-  lower bound of the resulting Uniform. Update models by replacing
-  `tau ~ ...` with `ndt ~ ...`, dropping `minrt = min(df$RT)`, adding
-  `poutlier ~ 1`, and rewriting any `sigmatau` term as `sigmandt` in seconds.
-
-  All three between-trial variability parameters remain legitimately **zero**,
-  and fixing them in the formula (`sigmadrift = 0`) still recovers the classic
-  4-parameter DDM. `cogmod_priors()` now supplies priors for all three:
-  each has a floor at zero that its link reaches only at minus infinity, and the
-  likelihood stops changing well before then, which under `brms`'s flat default
-  is an improper posterior.
-
-  `posterior_epred_cogmod_ddm()` keeps its closed form - the DDM is the one
-  choice family here with a usable one - now using `ndt` directly and blending
-  in the outlier component when `predict_outliers` is set, like the RT-only
-  families. `rcogmod_ddm()` and `dcogmod_ddm()` no longer take `...` for
-  `brms::rwiener()`/`brms::dwiener()`, which the shared mixture machinery cannot
-  forward; set `options(wiener_backend = )` instead.
-
-  Both R and Stan evaluate the decision component at a non-decision time of
-  zero, which `dwiener()`, `rwiener()` and `wiener_lpdf()` all refuse. Since the
-  Wiener density depends on the time and the non-decision time only through
-  their difference, both offset the pair by the same `1e-10`, and the Stan
-  literal is generated from the R constant so the two cannot drift apart.
-
-  All four choice+RT families are now on the direct `ndt` + `poutlier`
-  parameterization, and `tau` + `minrt` is gone from the package.
-
-## Bug fixes
-
-* **`dcogmod_lba1()` was wrong for small start-point ranges.** Its density is built
-  from `drift * (Phi(z2) - Phi(z1)) + sigma * (phi(z1) - phi(z2))` divided by the
-  start-point range `A`, and both differences vanish linearly in `A` - so
-  evaluating them directly and then dividing lost every significant digit once
-  `A` was small. The old code also floored the bracket at `1e-10`, which turned
-  that underflow into a spurious density floor spread over the whole line. The
-  result: the density stopped integrating to one below about `A = 0.1` and was
-  outright divergent below `A = 0.01`.
-
-  Both differences are now computed stably - a Taylor expansion in
-  `delta = A / (sigma * t)` below `1e-4`, and tail-aware differencing above it -
-  and the floor is gone. The density integrates to 1 from `A = 2` down to
-  `A = 1e-8`, and converges to the recinormal (LATER) limit at the expected
-  first-order rate. The same fix is in the Stan code, which matches the R
-  density across 960 parameter combinations.
-
-## Bug fixes (parameterization)
-
-* `posterior_epred_cogmod_logweibull()` returned `exp(mu + sigma * 0.5772)`, which is
-  the *geometric* mean of the decision time - the exponential of `E[log(RT)]` -
-  rather than its mean. It now returns `exp(mu) * gamma(1 - sigma)`, and `Inf`
-  where `sigma >= 1` and no mean exists.
-
-* `posterior_epred_cogmod_invweibull()` now returns `Inf` where the Frechet shape is
-  `<= 1` and the mean does not exist, instead of a finite but meaningless value.
-
-* `cogmod_lognormal()` no longer uses `tau` and `minrt`. Non-decision time is now
-  estimated directly as `ndt`, in seconds, through a log link, and the family
-  gains `poutlier`, the proportion of trials generated by an outlier process
-  rather than by the decision process.
-
-  The old parameterization set `ndt = tau * minrt` with `tau` in `(0, 1)` and
-  `minrt` injected as a constant, which capped `ndt` at an order statistic of
-  the sample. Because that cap was shared across the whole dataset, a
-  non-decision time larger than the fastest observed response was
-  inexpressible - so any condition or participant whose true `ndt` exceeded the
-  global minimum RT could not be recovered, and the misfit surfaced instead as
-  spurious effects on the other parameters.
-
-  What makes the direct parameterization tractable is the outlier component: a
-  fixed half Student-t (scale `0.4`, `3` df) mixed in with weight `poutlier`
-  keeps the density positive below `ndt`, turning the hard min-RT boundary into a
-  finite cost and leaving the log-density smooth. No bound is taken from the
-  data. The half-t is flat at the origin, so the fastest responses are not
-  starved of density; its tails are heavy enough that supplying RT in
-  milliseconds degrades rather than underflowing to zero; and its mean is finite,
-  which `posterior_epred()` requires.
-
-  Models must be updated: replace `tau ~ ...` with `ndt ~ ...`, drop
-  `minrt = min(df$RT)`, and add `poutlier ~ 1`. Note that `ndt` coefficients
-  are on the log scale, so `exp()` them for seconds.
-
-* The outlier component is scaled by `minrt`, the fastest reaction time that
-  could plausibly be a real decision, used directly as the half-t scale with no
-  conversion factor. It defaults to `0.3` seconds, where the conditional
-  accuracy functions in the *Outliers* article show responses sitting at chance
-  across three paradigms. 61% of the component falls below `minrt` whatever
-  value is chosen.
-
-  It is a judgement about the task rather than a statistic: nothing is read off
-  the sample, and `ndt` is not bounded by it.
-
-  This matters because the shifted LogNormal is scale-equivariant on its own -
-  multiply every response by 1000 and `ndt` comes back multiplied by 1000 - and
-  a component pinned to the second would be the one thing breaking that. With
-  millisecond data and a fixed scale, the outlier component sits many orders of
-  magnitude below the decision density everywhere in the data, `poutlier`
-  collapses toward zero and `ndt` reverts to being pinned by the fastest
-  observed response, silently and without a warning. Setting `minrt` in the unit
-  of the data makes the likelihood exactly equivariant instead, so millisecond
-  data need `minrt = 300`.
-
-  `minrt` is a constant, never estimated, and is deliberately **not** a dpar:
-  `brms` has no notion of a default for one, so a dpar omitted from the formula
-  is estimated rather than defaulted. It is carried on the family, and the
-  matching Stan constant comes from `cogmod_lognormal_stanvars()`, which also
-  accepts the family itself so the two cannot drift apart:
-
-  ```r
-  fam <- cogmod_lognormal(minrt = 0.3)
-  f <- brms::bf(RT ~ 1, sigma ~ 1, ndt ~ 1, poutlier ~ 1, family = fam)
-  brms::brm(f, data = df, prior = cogmod_priors(f, df),
-            stanvars = cogmod_lognormal_stanvars(fam))
-  ```
-
-  `rcogmod_lognormal()` and `dcogmod_lognormal()` gain a matching `minrt` argument.
-  Models fitted before this change fall back to the default, so their
-  predictions are unaffected.
-
-* The `wagenmakers2008` dataset has been removed. Those data were supplied by
-  the original authors for distribution in the `rtdists` package specifically,
-  and no open licence covers them, so redistributing them here was not
-  appropriate. They remain available as `rtdists::speed_acc`; `rtdists` is in
-  `Suggests`, and the vignettes and paper now reconstruct the same subset from
-  it (`!censor & response != "error" & rt <= 2`), so previously reported
-  results are unchanged.
-
-* The experimental confidence signal detection model (`rconf_sdt()`,
-  `dconf_sdt()`, `conf_sdt_stanvars()`, `conf_sdt_custom_family()` and its
-  `brms` methods) is no longer exported. It was not ready, and the code is
-  commented out in `R/conf_sdt.R` and `R/conf_sdt_brms.R` pending a rework.
-
-* **Priors are now required.** `brms` assigns a flat, improper prior to the
-  intercept of any custom-family parameter it does not recognise, which here
-  means both `ndt` and `poutlier`, and the likelihood has two flat directions
-  that a flat prior turns into an improper posterior: `poutlier` toward 1, where
-  every response is attributed to the outlier component and `mu`, `sigma` and
-  `ndt` drop out of the density altogether; and `ndt` toward 0, where the model
-  reduces to an unshifted LogNormal and the gradient with respect to `log(ndt)`
-  vanishes. The second is inherent to putting a positive shift on a log link and
-  has nothing to do with the mixture, which is why a prior on `poutlier` alone
-  is not enough. Symptom: intercepts around `1e14`, `Rhat` near 2 and an
-  effective sample size of about 5, with no error raised. `cogmod_priors()`
-  fills the gap.
+# cogmod 0.3.1
 
 ## New features
 
-* `cogmod_priors(formula, data)` fills in every prior `brms` would otherwise
-  leave flat - for `cogmod_lognormal()`, the `ndt` and `poutlier` rows. It starts
-  from `brms::get_prior()` for the model in hand rather than guessing, so
-  `0 + Intercept` formulas, interactions, group-level terms and smooths are all
-  handled and a prior matching no parameter is impossible by construction. The
-  result is passed through `brms::validate_prior()`, so a malformed
-  specification errors there with the offending row in view, and the return
-  value is the complete prior table with a `source` column marking each row as
-  `user` or `default` - print it to see exactly what the model will be fitted
-  with. To change one, edit the row; `c()` will not work for a slot the table
-  already covers, because `brms` rejects two priors for the same slot.
+* **New `cogmod_warmstart()`** turns what a previous fit's warmup produced -
+  the adapted inverse metric, the step size and the posterior means - into the
+  `init`, `inv_metric` and `step_size` arguments of a new `brm()` call, so
+  that a refit, or the same model on more participants, can run a much shorter
+  warmup. Stan adapts one variance per unconstrained parameter, and the
+  function labels each with its Stan name (read off the generated program with
+  the parser `cogmod_inits()` already has) and joins the two models on those
+  names: population-level entries carry over, a pilot participant's
+  standardized effects follow it by level name to its position in the bigger
+  model, new participants take their effect's average variance and start at
+  zero, and anything without a counterpart gets Stan's default variance and a
+  generic start, with a count in `print()`. The standardized effects and
+  Cholesky factors that `brms` drops from a saved fit are rebuilt from the
+  `r_`, `sd_` and `cor_` it keeps. `as.data.frame()` gives a table of a few
+  kilobytes that survives `write.csv()` and can be passed back as a file path,
+  so a pilot fitted on a laptop can warm-start an array job on a cluster. On
+  the other side, `cogmod_inits()` gains a `warmstart` argument and the new
+  `cogmod_inv_metric()` and `cogmod_step_size()` share its signature - the
+  model's formula and data, then the source, be it a fit, a table or a file -
+  so that each argument of `brm()` has one helper and the table is mapped onto
+  the model on the way. Whatever of `formula` and `data` is not given is taken
+  from the source fit. Works for any `brms` model fitted
+  with the `cmdstanr` backend and the diagonal metric. On a mixed LNR and a mixed DDM, a pilot on 4 of 8
+  participants warm-started the full fit to about twice the effective draws
+  per second of a cold start with the full warmup, and four to six times those
+  of a cold start with the same short warmup; the starting values alone bought
+  nothing, so the metric and step size are the product
+  (`vignette("performance")`).
 
-  The family is read off the formula, so build it with
-  `brms::bf(..., family = cogmod_lognormal())`. Any other family, or a formula
-  carrying none, gets a message and the `brms` defaults unchanged, so the call
-  is always safe to leave in a script.
+* **`cogmod_invgaussian()` gains `sigmandt`**, the between-trial range of the
+  non-decision time (`st0`): each trial's non-decision time is drawn from
+  `Uniform(ndt, ndt + sigmandt)`, so `ndt` becomes its lower bound, exactly as
+  in `cogmod_ddm()`. Spreading the shift turns the Wald density into a
+  difference of two CDFs and the CDF into a difference of two integrated CDFs,
+  both closed form at a fixed drift, so the parameter costs a few normal CDFs
+  per observation, works with `cens()` unchanged, and rides the existing drift
+  quadrature when `sigmadrift > 0` too. It is on a `log` link with
+  `cogmod_ddm()`'s prior for the same quantity. **It is hard to estimate and
+  should be fixed at zero for most applications** (`sigmandt = 0` in `bf()`);
+  it shares the leading edge of the distribution with `ndt` and `poutlier`, and
+  should only be freed with a lot of data, a strong prior, or both. As with
+  `sigmadrift`, leaving it out of `bf()` *estimates* it, so existing Wald
+  formulas that do not mention it now fit one more parameter unless they add
+  `sigmandt = 0`, and fits made before this version cannot be post-processed
+  with it; the vignette models were refit. `rcogmod_invgaussian()`,
+  `dcogmod_invgaussian()` and `pcogmod_invgaussian()` take `sigmandt` right
+  after `sigmadrift`, so a `poutlier` passed by position moves along one.
 
-* `p_outlier()` returns the posterior probability that each trial came from the
-  outlier component rather than the decision process - the mixture
-  responsibility, averaged over draws. Responses below `ndt` come out at 1 and
-  those in the bulk near 0, but the probability rises again in the far slow tail,
-  where the half-t has heavier tails than the LogNormal; that is the mechanism
-  behind the advice to filter implausibly slow responses before fitting. The
-  responsibility is computed on the log scale, so it stays finite in tails where
-  both components underflow to zero. It returns `rt` and `p_outlier` only; the
-  `fast` column was a marginal median split that ignored any grouping in the
-  model and is gone.
+* **Censored reaction times: `brms`'s `cens()` works on the RT-only families.** `bf(rt | cens(error) ~ ...)` scores an error trial as a
+  *right-censored correct response*: its RT is a lower bound on when the
+  correct process would have finished, so it contributes that process's
+  survival rather than its density. On `cogmod_invgaussian()` this is the
+  *simple* censored shifted Wald of [Miller et al. (2018)](https://doi.org/10.1177/0146621617710465), their Eq. 4, the
+  `version = "simple"` of the `cswald` model in [`bmm`](https://github.com/popov-lab/bmm).
+  It is not their competing-risks variant (Eq. 5, a race of two Wald
+  accumulators with drifts `v` and `-v`, as implemented in `rtdists` and
+  `bmm`'s `version = "crisk"`), which is a choice model rather than a censoring
+  construction; `cogmod_ddm()` with `bias` fixed at 0.5 covers that ground.
+  Here censoring is not a family but a
+  construction, so the same formula works on every RT-only family with a
+  closed-form CDF: `cogmod_lognormal()`, `cogmod_logstudent()`,
+  `cogmod_gamma()`, `cogmod_invgamma()`, `cogmod_weibull()`,
+  `cogmod_invweibull()`, `cogmod_logweibull()`, `cogmod_bisa()`,
+  `cogmod_exgaussian()` and `cogmod_geg()`. Left- and interval-censoring come
+  with it, and `log_lik()` - hence `loo()` - honours all three, which `brms`
+  leaves to a custom family's own method. `posterior_predict()` predicts the
+  latent, uncensored RT, as `brms` does for its own families.
+  `cogmod_priors()` and `cogmod_stanvars()` refuse `cens()` on the families
+  that cannot take it, and `cogmod_priors()` warns above 20% censored trials -
+  a threshold that is exact for timeouts and omissions at any rate but lenient
+  for commission errors, where the construction is biased well before it (see
+  `?rcogmod_invgaussian`).
+  What the model is for, what it assumes and the one check to run before using
+  it are in `?rcogmod_invgaussian` and the *Censored Shifted Wald* section of
+  `vignette("rt_models")`.
 
-* `posterior_predict()` and `posterior_epred()` for `cogmod_lognormal()` describe
-  the **decision process alone** by default, as if `poutlier` were zero. For
-  visualising effects the outlier component is a nuisance that pulls expected
-  values toward its own mean (0.441 s) and adds a spike of implausibly fast
-  draws; it is also a fixed regularizer rather than a claim about how guesses
-  are distributed, so simulating from it means simulating from something the
-  model does not assert. The likelihood is unaffected and is always the full
-  mixture, so `posterior_predict()` and `log_lik()` no longer describe the same
-  distribution - a hand-rolled LOO-PIT check should use `with_outliers()`.
+  Under the hood every censorable family gets a `<family>_lcdf` and a
+  `<family>_lccdf` beside its `_lpdf`, generated from two new registry slots so
+  a family cannot drift out of step with itself. The survivals are written as
+  survivals - never as `log(1 - exp(lcdf))` - and the half Normal outlier's
+  through `std_normal_lcdf(-z)` rather than `std_normal_lccdf(z)`, which is
+  `-inf` from 1.66 s on: the two places `bmm`'s implementation broke. With
+  `sigmadrift > 0` the Wald CDF has no closed form and is taken by 64-point
+  Gauss-Legendre quadrature over the drift, in R and Stan alike off one node
+  table.
 
-* `with_outliers()` restores the fitted mixture for prediction, and
-  `without_outliers()` returns to the default. The main use for the former is
-  `pp_check()`: on untrimmed data the decision-only predictive has no fast spike
-  to match the one in the data, which reads as misfit. The same flag can be set
-  up front with `cogmod_lognormal(predict_outliers = TRUE)`.
+* **`pcogmod_*()` for every censorable family.** `pcogmod_lognormal()`,
+  `pcogmod_logstudent()`, `pcogmod_gamma()`, `pcogmod_invgamma()`,
+  `pcogmod_weibull()`, `pcogmod_invweibull()`, `pcogmod_logweibull()`,
+  `pcogmod_bisa()` and `pcogmod_exgaussian()` join `pcogmod_invgaussian()`,
+  with `lower.tail` and `log.p`. The upper tail is computed *as* the upper
+  tail rather than as `1 - CDF`; these are the R side of the Stan
+  `_lcdf`/`_lccdf` pair, and the tests hold the two to each other.
+  
+* **`cogmod_priors()` now checks the response before returning.** Everything in
+  this package is stated in seconds and none of it is unit-equivariant - the
+  `ndt` prior means 170-300 ms, `.POUTLIER_SCALE` is 0.2 s - but `brms` fills
+  its own defaults from the data, so a column of milliseconds produces a model
+  whose two halves silently describe different quantities. It compiles, it
+  samples, it converges, and the estimates are meaningless. The check catches
+  that and the handful of other mistakes with the same character.
 
-  It is carried on the family rather than passed as an argument because `brms`
-  does not forward extra arguments to a custom family's prediction methods -
-  `posterior_epred` reaches the method with `prep` and nothing else - and
-  `insight`, `modelbased` and `marginaleffects` inherit that. Carrying it on the
-  object is what makes it work through all of them.
+  It **stops** where the offending rows would make the fit impossible or wrong
+  in a way `Stan` cannot report: a non-positive reaction time under a family
+  that places no density below `ndt`; a response outside `[0, 1]` for
+  `cogmod_choco()` or `cogmod_betagate()`; a non-integer rating for
+  `cogmod_betadiscrete()`; a non-numeric response; and a third level in `dec()`,
+  which the choice families would otherwise fold silently into option 1, since
+  their Stan code tests `dec == 0` and takes the else branch for everything
+  else.
 
-* New *Outliers* article validating the outlier-mixture specification against
-  the Illusion Game dataset, cross-checked against the lexical decision data of
-  Wagenmakers et al. (2008) and the brightness discrimination of Ratcliff and
-  Rouder (1998), both from `rtdists`. It also derives recommended priors for all
-  four parameters from the rates it measures, and explains why they matter more
-  under this parameterization than the last: `ndt` is no longer bounded above by
-  construction, and `poutlier` has a degenerate region near 1 where `ndt` becomes
-  unidentified.
+  It **warns** about the rest: a median implying milliseconds, `NA`s, and either
+  tail running past what `poutlier` can absorb. The tails are judged as
+  proportions rather than counts, because the outlier component is *supposed* to
+  produce the occasional fast response - `rcogmod_lognormal(200, ndt = 0.2,
+  poutlier = 0.02)` puts one at 81 ms - and a count-based test fires on the
+  package's own generator. Over 20000 draws the component sends 0.8% of
+  responses below 0.1 s at `poutlier = 0.02` and 1.9% at 0.05, the top of the
+  default prior, so the warning sits at 5%.
 
-# cogmod 0.1.0
+  Families with neither `ndt` nor `poutlier` - `cogmod_exgaussian()` and
+  `cogmod_geg()` - are exempted from the tail checks, and a non-positive
+  response is a warning rather than an error there, their support being the
+  whole real line. A formula or family the check cannot read is passed through
+  untouched, so `brms`'s own error is what the user sees.
 
-## Models for subjective scales
+## Bug fixes
 
-* Beta-Gate (`cogmod_betagate()`, `rcogmod_betagate()`, `dcogmod_betagate()`), a reparametrised
-  ordered beta model.
-* Discrete Beta (`cogmod_betadiscrete()` and friends) for Likert-type responses.
-* Choice-Confidence, CHOCO (`cogmod_choco()`, `rcogmod_choco()`, `dcogmod_choco()`) for bipolar
-  scales.
-* Signal detection with confidence ratings (`conf_sdt()`).
+* **`dcogmod_ddm()` and everything built on it (`log_lik()`, `loo()`,
+  `p_outlier()`, the other R-side post-processing of `cogmod_ddm()` fits) are
+  now accurate when the `sigmandt` range reaches down to fast decision
+  times.** The R density integrates the non-decision time out with a fixed
+  25-node Gauss-Legendre rule, and when that range covers decision times from
+  about zero up to the response - a fast response, or a wide `sigmandt` - the
+  integrand holds the whole early peak of the first-passage density inside a
+  sliver of it, which 25 nodes on the plain time scale cannot resolve. It is
+  the defect reported against `rtdists::ddiffusion()` in
+  [rtdists issue 28](https://github.com/rtdists/rtdists/issues/28), and it was
+  here too: on the issue's own example (`boundary = 0.5`, `drift = 0.5`,
+  `bias = 0.3`, `sigmandt = 0.16`, decision time 0.16) the density was out by
+  5e-4, by 3% with `bias = 0.1` and `sigmandt = 0.2`, and by 50% with the start
+  point almost on the responding boundary. The rule now runs over *log*
+  decision time, from the point where the density is dead rather than from
+  zero, so the peak is about one log unit wide wherever it sits and the same
+  25 nodes resolve it at any time scale, and the rule takes more nodes only
+  when the log range is wide enough to need them: the worst error over the
+  issue's sweep is now below 1e-9, and below 4e-12 over a much broader grid,
+  against a converged 1600-node rule. Densities with `sigmandt = 0` are
+  unchanged to the last bit, and the common case - `sigmandt` well inside the
+  response time, where the old rule was already accurate - gives the same
+  values at the same cost. The Stan likelihood uses Stan's own adaptive
+  `wiener_lpdf()` and was never affected, so fitted models are unchanged; only
+  their R-side post-processing moves, and only in that regime. The
+  R-versus-Stan density test is tightened from a relative 1e-4 to 1e-5
+  accordingly, which is Stan's own tolerance.
 
-## Models for decision making
+* **`cogmod_rdm()` no longer produces divergent transitions by the hundred on
+  healthy posteriors.** The Stan log-survival of the losing accumulator formed
+  its reflection term as `log_diff_exp(log R(b), log R(k))`, and for a response
+  less than about half a millisecond above the non-decision time both normal
+  CDFs in `R` round to exactly 1, so it evaluated `log_diff_exp(0, 0)`. The
+  *value* is fine (`-Inf` for a term that really is negligible there, which
+  is why the R-versus-Stan density tests never caught it), but its
+  reverse-mode adjoint is `0 / 0`, and that `NaN` propagated into the gradient
+  of every parameter. Stan reports a `NaN` gradient as a divergent transition,
+  and because `ndt` is estimated a few milliseconds below the fastest responses,
+  most trajectories crossed one of those windows: on the lexical decision data
+  of the decision-making article, 900 trials from 6 participants, between a
+  third and two thirds of the transitions were divergent - with
+  population-level effects only or with participant intercepts, under `diag_e`
+  or `dense_e` - while `Rhat` and the effective sample sizes said the posterior
+  was fine, because it was. The difference is now assembled from three pieces
+  that each stay away from the saturated end of the normal CDF, at the cost of
+  two extra normal CDFs on early responses only. Values are unchanged to
+  `1e-12` on the log scale; the same fits now run without a divergence
+  (population-level) or with the handful the other families also show under
+  `dense_e` with random effects. The other race families are unaffected. A
+  gradient regression test guards it, gated behind `COGMOD_TEST_SLOW` like the
+  other tests that compile a model of their own.
 
-* Lognormal race (`cogmod_lnr()`), linear ballistic accumulator (`cogmod_lba2()`), drift
-  diffusion with optional across-trial variability (`cogmod_ddm()`), and the racing
-  diffusion model (`cogmod_rdm()`).
+* **`rcogmod_ddm()` no longer returns the odd 10-40 s response in place of a
+  fast one.** The sampler inverts the CDF with Newton's method, and took a step
+  under `1e-10` in log time as convergence. A pass that lands far in the tail
+  finds the survival and the density both denormal, and their ratio makes the
+  step look tiny while the residual is still hundreds of log units off, so the
+  draw was accepted where it stood. It hit about one draw in 4,000 to 20,000
+  at short boundaries or strong drifts (`boundary = 0.3`, `bias = 0.3`,
+  `drift = -5` is one such cell; `boundary = 2`, `bias = 0.7`, `drift = 6`
+  another), which is rare in `rcogmod_ddm()` and a handful of absurd draws per
+  observation in `posterior_predict()`, where every observation gets thousands.
+  Convergence now also requires a small residual, and a test pushes every draw
+  back through the CDF to check it lands on its own quantile.
 
-## Models for reaction times alone
+## Performance
 
-* A consistently parametrised set of shifted, right-skewed response
-  distributions: `cogmod_lognormal()`, `cogmod_invgaussian()`, `cogmod_gamma()`,
-  `cogmod_invgamma()`, `cogmod_weibull()`, `cogmod_logweibull()`, `cogmod_invweibull()`,
-  `cogmod_exgaussian()` and `cogmod_lba1()`.
+* **`rcogmod_ddm()` is 3x faster, and `posterior_predict()` on a
+  `cogmod_ddm()` model up to 16x.** The sampler inverts a series whose length
+  is set by the fastest response it could be asked for, and used that length
+  for every draw: 41 terms at the default start point where the median draw
+  needs 6, 205 at a start point of 0.1. It now runs in stages - 16 terms
+  settle the bulk of the draws, and only the responses too fast for that many
+  go round again with four times as many, until the full series is reached.
+  Nothing is approximated: a draw is only accepted from a stage whose series
+  is exact at its root, and the draws agree with the CDF to `1e-12`. The gain
+  is largest where the parameters vary across draws, as they do in
+  `posterior_predict()`, because one extreme posterior draw used to set the
+  series length for all of them. Converged draws now also drop out of the
+  Newton iteration, and a fast response starts from the single-barrier
+  small-time approximation rather than from the floor of the bracket.
 
-## Data
+* **The choice families' `posterior_predict_*()` methods take a vector of
+  observations**, returning the draws stacked with those for `i[1]` first.
+  `brms::posterior_predict()` calls the method once per observation, and with
+  a few dozen draws per call about half of each call is fixed cost and the loop
+  adds as much again; predicting in chunks of ~50 observations from a prepared
+  `brmsprep` instead runs a posterior predictive check on 2,500 DDM trials in
+  about a third of the time. The recipe is in `?posterior_predict_cogmod_ddm`.
+  The DDM sampler's own fixed cost per call is also down by about 15%, from
+  indexed assignment in place of `ifelse()` and no column copies while every
+  draw is still active; the draws are bit-identical.
 
-* `wagenmakers2008`, lexical decision data from Wagenmakers et al. (2008).
-* `badlm`, a simulated dataset in which two conditions share a mean reaction
-  time while differing in shift, spread and tail weight.
+* **The R-side DDM density no longer goes through `brms::dwiener()`.**
+  `dcogmod_ddm()`, and with it `log_lik()`, `loo()`, `p_outlier()` and every
+  other post-processing method that evaluates the likelihood in R, now use a
+  vectorised Navarro and Fuss (2009) series written in log space. The
+  4-parameter density is about eight times cheaper per element and agrees with
+  `brms::dwiener()` to `1e-12` on the log scale. The 7-parameter density, which
+  evaluates that series 625 times per observation under Gauss-Legendre
+  quadrature, goes from about 5 ms to about 0.6 ms per draw-observation - a
+  LOO over 4000 draws of 500 trials drops from close to three hours to about
+  twenty minutes. Both
+  now return a finite log-density in the far tails where `dwiener()` returns
+  `log(0)`. The Stan likelihood is unchanged. `RWiener` is still needed by the
+  test suite, which uses `dwiener()` as the reference.
+
+## Documentation
+
+* The performance article is reorganised from the suggestions with no downside
+  to the ones that need judgement, and gains four sections. **Compiler
+  optimizations**: stanc's `O1` and CmdStan's `STAN_CPP_OPTIMS` and
+  `STAN_NO_RANGE_CHECKS`, passed through `stan_model_args`, and what each one
+  does. **Mass matrix adaptation** (`metric = "dense_e"`): why the
+  boundary/ndt and drift/boundary trade-offs of evidence accumulation models
+  make the default diagonal metric a poor fit, what the dense metric costs as
+  the number of parameters grows, and how to pass it through either backend.
+  **Warm starts**: reusing the adapted metric and step size that `brms` keeps
+  in a fit's metadata to shorten the warmup of a refit; carrying a pilot fit's
+  metric, step size and posterior means over to the same model on more
+  participants, which has more parameters, by mapping the metric across by
+  parameter name (about twice the effective draws per second of a cold start
+  on a mixed LNR and a mixed DDM, where the pilot's initial values alone
+  bought nothing); and a `cmdstanr`-level pipeline that initializes MCMC from
+  Pathfinder draws and their unconstrained covariance, then wraps the result
+  back into a `brmsfit`, with the reasons never to fix the metric to a
+  variational approximation. The approximation
+  section now also covers the **Laplace approximation**
+  (`algorithm = "laplace"`) and how it compares with Pathfinder. Each section
+  reports what the option bought on the DDM, LBA, LNR and RDM in a local
+  benchmark; the scripts behind those numbers live in `benchmarks/` (not part
+  of the installed package) and can be rerun on any model.
+
+## Breaking changes
+
+* **`cogmod_lba2()` now truncates each drift rate at zero**, the convention of
+  `rtdists` (`posdrift = TRUE`), `DMC`, `EMC2` and `ggdmc`. Previously the pair
+  of drifts was conditioned on at least one being positive and a losing
+  accumulator was allowed a negative rate, which it kept forever. The two are
+  different models of the same race wherever a drift is small relative to its
+  SD: densities up to about 40-50% apart in the tails, choice probabilities a
+  few percentage points apart. The change makes `cogmod` LBA estimates directly
+  comparable with those packages and with the literature built on them, and
+  `dcogmod_lba2()` now reproduces `rtdists::dLBA()` at the same parameter
+  values. It also simplifies the sampler, which draws each drift from its
+  truncated Normal rather than splitting the conditional law into cases.
+  **Fits made with earlier versions cannot be post-processed with this one**,
+  and their estimates are not comparable with new ones at low drift rates;
+  the vignette model was refit. The loser's survival is computed as
+  `P(v > 0, unfinished) / P(v > 0)` from whichever tail keeps its digits, so
+  the density stays accurate for a loser with a strongly negative drift, where
+  both quantities are tiny, and in the far tail, where `1 - CDF` would cancel.
+  `cogmod_lba1()` is unaffected: with one accumulator the two conventions
+  coincide.
+
+  The truncation has one cost, and `cogmod_priors()` now covers it: once an
+  accumulator rarely wins, its `drift` and `sigma` are identified only through
+  `|drift| / sigma^2` (the truncated Normal converges to an Exponential along
+  that ray), so a flat prior lets the drift run off - the vignette's error
+  accumulator sat at `-12` with an interval of `-23` to `-6.5`. `cogmod_priors()`
+  therefore puts `normal(1, 2)` on `driftone` and `normal(0, 1.5)` on its
+  slopes, the treatment `cogmod_lnr()`'s `nuone` already had. Existing formulas
+  that left `driftone` to `brms` get this prior on their next
+  `cogmod_priors()` call.
+
+# cogmod 0.3.0
+
+- CRAN Publication.

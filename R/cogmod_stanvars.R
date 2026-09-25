@@ -76,6 +76,11 @@ cogmod_stanvars <- function(formula, ...) {
     )
   }
 
+  # The Stan code is the same with or without `cens()` - the CDF and survival
+  # ride along wherever the family has them - so all there is to do here is
+  # refuse a family that has none, before brms writes a call to it.
+  if (.has_cens(formula)) .check_cens_family(fam)
+
   fn <- get(paste0(fam, "_stanvars"), envir = asNamespace("cogmod"),
             mode = "function")
   do.call(fn, list(...))

@@ -58,11 +58,11 @@
 #' fastest observed response, so a non-decision time that varies by condition or
 #' by participant can exceed the sample minimum wherever the data support it.
 #'
-#' This replaces the earlier `tau` / `minrt` pair, in which `ndt = tau * minrt`
-#' with `minrt` set to the fastest observed RT. That capped the non-decision
-#' time at an order statistic of the sample, so any condition or participant
-#' whose true `ndt` exceeded the fastest observed response was inexpressible,
-#' and the misfit surfaced as spurious effects on the race parameters.
+#' Tying `ndt` to the fastest observed response would cap it at an order
+#' statistic of the sample, so any condition or participant whose true `ndt`
+#' exceeded that response would be inexpressible, and the misfit would surface
+#' as spurious effects on the race parameters. Expressing it directly is what
+#' avoids that.
 #'
 #' # The outlier component
 #'
@@ -81,10 +81,11 @@
 #' \deqn{f(t, k) = p \frac{1}{K} g(t) + (1 - p) f_k(t - ndt)}
 #'
 #' The `1 / K` is what keeps the total summing to one over the response options;
-#' without it it would come to `1 + poutlier`. The half-t is used for the timing
-#' because it is **flat at the origin** (zero derivative), so the very fastest
-#' responses - the ones least plausibly decisions - are not starved of density,
-#' and because its tails are heavy enough to cover the whole plausible RT range.
+#' without it it would come to `1 + poutlier`. The half Normal is used for the
+#' timing because it is **flat at the origin** (zero derivative), so the very
+#' fastest responses - the ones least plausibly decisions - are not starved of
+#' density, and because it dies fast enough above that range to leave the slow
+#' tail to the race itself rather than claiming it.
 #'
 #' `poutlier` is a *rate*, not a classification: the model never labels
 #' individual trials, it estimates what share of them came from elsewhere. Use
@@ -94,8 +95,7 @@
 #'
 #' The outlier component's scale is a constant in seconds, and so are the
 #' priors [cogmod_priors()] supplies. There is no argument for changing the
-#' unit: the `minrt` argument that used to rescale the component was removed in
-#' 0.2.1. Millisecond data fails silently rather than loudly - the outlier
+#' unit. Millisecond data fails silently rather than loudly - the outlier
 #' component contributes nothing and the min-RT boundary comes back. See the
 #' corresponding section of [cogmod_lognormal()] for the full account, which
 #' applies unchanged here.
@@ -123,7 +123,14 @@
 #' Use [cogmod_inits()] rather than `init = 0`. `brms` initialises on the
 #' unconstrained scale, so `init = 0` puts `ndt` at `exp(0) = 1` second - above
 #' nearly every sub-second RT, which leaves every response attributed to the
-#' outlier component and the race parameters with no gradient at all.
+#' outlier component and the race parameters with no gradient at all. It also
+#' starts `driftone` at a third of `mu`'s drift rather than equal to it: a
+#' Wald density is thin on the fast side and flat on the slow side, so an
+#' error accumulator started too fast sits hundreds of log-density units above
+#' the posterior, and a cold chain's first trajectory can convert that into a
+#' run down the flat `driftone` direction from which it never returns. On the
+#' benchmark data of the [performance article](https://dominiquemakowski.github.io/cogmod/articles/performance.html) that froze one chain in four;
+#' the slower start removed it.
 #'
 #' [cogmod_priors()] is not a convenience here either. Beyond `ndt` and
 #' `poutlier`, `sigmabias` and `boundary` are only weakly identified from each
@@ -257,7 +264,7 @@ dcogmod_rdm <- function(x, vzero = 3, vone = 2, boundary = 0.5, bias = 0.2,
   if (is.null(response)) {
     # The marginal is the sum of the two defective densities. The outlier
     # component's 1 / K sums back to 1 over the options, so what comes out is
-    # the plain mixture of the half-t with the marginal race density.
+    # the plain mixture of the half Normal with the marginal race density.
     per_k <- lapply(c(0, 1), function(k) {
       dcogmod_rdm(x, vzero = vzero, vone = vone, boundary = boundary,
                   bias = bias, ndt = ndt, response = k, poutlier = poutlier,
@@ -1159,9 +1166,17 @@ cogmod_rdm <- function(
 # The Stan side of the decision component. Pulled out of the lpdf as a
 # prelude, like the LBA's and the Log-Gamma's, because the density itself is
 # one expression in the registry and the arithmetic that keeps it stable does
-# not fit in one.
+# not fit in one. Every normal tail below goes through cogmod_log_Phi(), which
+# comes in with .LOG_PHI_STAN_PRELUDE (core_shifted.R): Stan's
+# std_normal_lcdf() has the right value but approximate partial derivatives,
+# and here those partials are the gradient of the drifts and the boundary.
+# Measured against central differences of the log probability over the
+# gradient check's grid (benchmarks/gradient_check.R): 2e-4 relative at the
+# start and up to 7e-2 with a small drift through std_normal_lcdf(), 2e-7
+# through cogmod_log_Phi(), at about 14% more per gradient
+# (benchmarks/gradient_cost.R, 5000 trials).
 #' @keywords internal
-.RDM_STAN_PRELUDE <- "
+.RDM_STAN_PRELUDE <- paste0(.LOG_PHI_STAN_PRELUDE, "
 // ---------------------------------------------------------------------------
 // Two-accumulator Racing Diffusion Model (Tillman, Van Zandt & Logan, 2020).
 //
@@ -1222,22 +1237,23 @@ real cogmod_rdm_log_g_lphi(real u, real lPhi) {
 // Standalone form, for the one caller that has no log Phi(u) to hand.
 real cogmod_rdm_log_g(real u) {
   if (u <= -10) return cogmod_rdm_log_g_lphi(u, 0);   // lPhi unused there
-  return cogmod_rdm_log_g_lphi(u, std_normal_lcdf(u | ));
+  return cogmod_rdm_log_g_lphi(u, cogmod_log_Phi(u));
 }
 
 // log(Phi(b) - Phi(a)) for b >= a, using whichever tail keeps both arguments
 // away from a saturating normal CDF.
 //
-// The upper tail is written as std_normal_lcdf(-a) rather than
-// std_normal_lccdf(a): Stan's lccdf collapses to -inf once its argument passes
-// about 8.3 (and is already wrong in the 3rd decimal at 8), whereas its lcdf
-// stays accurate past -30. The two are mathematically identical, and the
+// The upper tail is written as cogmod_log_Phi(-a) rather than as a Stan
+// upper-tail function: std_normal_lccdf() collapses to -inf once its argument
+// passes about 8.3 (and is already wrong in the 3rd decimal at 8), and the
 // distinction is not academic here -- alpha reaches 10 for a reaction time only
-// a few milliseconds above the non-decision time.
+// a few milliseconds above the non-decision time. cogmod_log_Phi() of the
+// negated argument is the same quantity, finite and differentiable however far
+// out.
 real cogmod_rdm_log_diff_Phi(real a, real b) {
   if (b <= a) return negative_infinity();
-  if (a >= 0) return log_diff_exp(std_normal_lcdf(-a | ), std_normal_lcdf(-b | ));
-  if (b <= 0) return log_diff_exp(std_normal_lcdf(b | ), std_normal_lcdf(a | ));
+  if (a >= 0) return log_diff_exp(cogmod_log_Phi(-a), cogmod_log_Phi(-b));
+  if (b <= 0) return log_diff_exp(cogmod_log_Phi(b), cogmod_log_Phi(a));
   return log(Phi(b) - Phi(a));
 }
 
@@ -1297,10 +1313,12 @@ real cogmod_rdm_wald_ldens(real t, real nu, real k, real A) {
 // Writing G for that antiderivative, S * A = G(k + A) - G(k), and G splits into
 // two pieces that are each monotone in the threshold. Grouping the six terms
 // into those two differences - rather than accumulating them one at a time with
-// signs - makes each group's sign known in advance and its magnitude a single
-// log_diff_exp, which removes every signed accumulator from the hot path and,
-// as a side effect, cancels less: measured against the R implementation the
-// grouped form is accurate to 6e-11 where the term-by-term one reached 5e-9.
+// signs - makes each group's sign known in advance, which removes every signed
+// accumulator from the hot path and, as a side effect, cancels less: measured
+// against the R implementation the grouped form is accurate to 6e-11 where the
+// term-by-term one reached 5e-9. (The second group is itself assembled from
+// three signed pieces, for the reason given at D2 below, but with its sign
+// still known in advance.)
 real cogmod_rdm_wald_lsurv(real t, real nu, real k, real A) {
   if (t <= 0) return 0;             // log(1): nothing finishes before the ndt
   real st = sqrt(t);
@@ -1308,8 +1326,8 @@ real cogmod_rdm_wald_lsurv(real t, real nu, real k, real A) {
 
   if (A / st < 1e-4) {              // midpoint plain Wald survival
     real bm = k + 0.5 * A;
-    real m1 = std_normal_lcdf((bm - nu * t) / st | );
-    real m2 = 2 * nu * bm + std_normal_lcdf(-(bm + nu * t) / st | );
+    real m1 = cogmod_log_Phi((bm - nu * t) / st);
+    real m2 = 2 * nu * bm + cogmod_log_Phi(-(bm + nu * t) / st);
     return m1 > m2 ? log_diff_exp(m1, m2) : negative_infinity();
   }
 
@@ -1327,8 +1345,8 @@ real cogmod_rdm_wald_lsurv(real t, real nu, real k, real A) {
   real linv = -log(2 * abs(nu));
 
   // The two shared normal CDFs: log_g needs them, and so does D2 below.
-  real lPa = std_normal_lcdf(alpha | );
-  real lPb = std_normal_lcdf(beta | );
+  real lPa = cogmod_log_Phi(alpha);
+  real lPb = cogmod_log_Phi(beta);
 
   // S * A = D1 - D2, both pieces positive.
   //
@@ -1336,25 +1354,62 @@ real cogmod_rdm_wald_lsurv(real t, real nu, real k, real A) {
   real lD1 = 0.5 * log(t) + log_diff_exp(cogmod_rdm_log_g_lphi(beta, lPb),
                                          cogmod_rdm_log_g_lphi(alpha, lPa));
   // D2 = |R(k + A) - R(k)| / (2 |nu|), for
-  //     R(x) = exp(2 nu x) Phi(-(x + nu t) / st) + Phi((x - nu t) / st).
-  // R has to be kept whole: its first piece alone is NOT monotone in the
-  // threshold, only the sum is, because dR/dx = 2 nu exp(2 nu x) Phi(-(x + nu t)
-  // / st) - the other two derivative terms cancel by the Wald reflection
-  // identity exp(2 nu x) phi((x + nu t) / st) = phi((x - nu t) / st). Split them
-  // and log_diff_exp gets a negative argument. R increases with the threshold
-  // when nu > 0 and decreases when nu < 0, and dividing by 2 nu flips the second
-  // case back, so D2 is positive either way.
+  //     R(x) = exp(2 nu x) Phi(-(x + nu t) / st) + Phi((x - nu t) / st)
+  //          = E(x) + Phi(alpha_x),
+  // which increases with the threshold when nu > 0 and decreases when nu < 0
+  // (dR/dx = 2 nu E(x): the other two derivative terms cancel by the Wald
+  // reflection identity exp(2 nu x) phi((x + nu t) / st) = phi((x - nu t) / st)).
+  // Dividing by 2 nu flips the second case back, so D2 is positive either way.
   //
-  // exp(2 * nu * x) * Phi(w) stays a single exponent so that it survives the
-  // range where the two factors separately overflow and underflow.
-  real lRb = log_sum_exp(2 * nu * b + std_normal_lcdf(-(b + nu * t) / st | ), lPb);
-  real lRk = log_sum_exp(2 * nu * k + std_normal_lcdf(-(k + nu * t) / st | ), lPa);
-  real lD2 = linv + (nu > 0 ? log_diff_exp(lRb, lRk) : log_diff_exp(lRk, lRb));
+  // It is NOT formed as log_diff_exp(log R(b), log R(k)). Just above the
+  // non-decision time alpha and beta run past 37, Phi(alpha) and Phi(beta) both
+  // round to exactly 1 and the E terms underflow next to them, so the two logs
+  // are exactly 0 and log_diff_exp(0, 0) is evaluated. Its value, -inf, is
+  // harmless - D2 really is negligible there - but its reverse-mode adjoint is
+  // 0 / expm1(0) = 0 / 0, and that NaN propagates to the gradient of every
+  // parameter. Stan treats a NaN gradient as a divergent transition, and with
+  // `ndt` sitting a few milliseconds below the fastest responses the sampler
+  // crossed that half-millisecond window under most trajectories: 60% of
+  // transitions divergent on the lexical decision data of the decision-making
+  // article, with the posterior itself perfectly healthy.
+  //
+  // So the difference is taken term by term instead:
+  //     R(b) - R(k) = [Phi(beta) - Phi(alpha)] + E(b) - E(k) = P + E_b - E_k,
+  // every piece of which is a log of something small and stays away from the
+  // saturated end of the normal CDF. P comes from whichever tail is small; the
+  // lower tail reuses lPa and lPb, which are exact there, and the upper one
+  // costs two more normal CDFs but only where alpha is large. E_b and E_k stay
+  // single exponents so that they survive the range where exp(2 nu x) and
+  // Phi(w) separately overflow and underflow. The sign of E_b - E_k is
+  // genuinely either (E alone is not monotone in the threshold), so it is
+  // resolved explicitly; the sum is positive for nu > 0 and negative for
+  // nu < 0. The guards below only ever fire when the difference is under one
+  // ulp of its terms, where D2 / D1 is far below double precision anyway.
+  // Measured against quadrature this form is as accurate as the grouped one;
+  // what it buys is a gradient that stays finite as t -> 0.
+  real lEb = 2 * nu * b + cogmod_log_Phi(-(b + nu * t) / st);
+  real lEk = 2 * nu * k + cogmod_log_Phi(-(k + nu * t) / st);
+  real lP = alpha < 3
+            ? log_diff_exp(lPb, lPa)
+            : log_diff_exp(cogmod_log_Phi(-alpha), cogmod_log_Phi(-beta));
+  real lD2;
+  if (nu > 0) {
+    if (lEb >= lEk) {
+      lD2 = log_sum_exp(lP, lEb > lEk ? log_diff_exp(lEb, lEk) : negative_infinity());
+    } else {
+      real lx = log_sum_exp(lP, lEb);
+      lD2 = lx > lEk ? log_diff_exp(lx, lEk) : negative_infinity();
+    }
+  } else {
+    real lx = log_sum_exp(lP, lEb);
+    lD2 = lEk > lx ? log_diff_exp(lEk, lx) : negative_infinity();
+  }
+  lD2 += linv;
 
   real ls = lD1 > lD2 ? log_diff_exp(lD1, lD2) : negative_infinity();
   return fmin(ls - log(A), 0);
 }
-"
+")
 
 
 #' @keywords internal
@@ -1365,17 +1420,17 @@ real cogmod_rdm_wald_lsurv(real t, real nu, real k, real A) {
 
 #' @rdname rcogmod_rdm
 #' @examples
-#' \donttest{
-#' # Exposing the Stan function needs cmdstanr and a CmdStan toolchain,
-#' # which live outside CRAN - see the package website to install them.
-#' if (requireNamespace("cmdstanr", quietly = TRUE) &&
-#'     !is.null(cmdstanr::cmdstan_version(error_on_NA = FALSE))) {
-#'   lpdf <- cogmod_rdm_lpdf_expose()
-#'   lpdf(
-#'     Y = 0.5, mu = 2, driftone = 1.5, sigmabias = 0.2, boundary = 0.5,
-#'     ndt = 0.2, poutlier = 0.02, dec = 0
-#'   )
-#' }
+#' \dontrun{
+#' # Needs cmdstanr and a CmdStan toolchain, which live outside CRAN - see the
+#' # package website to install them. Not run under R CMD check, which executes
+#' # every example in one R session: once brms has fitted a model there (the
+#' # cogmod_inits() and p_outlier() examples do), rstan is live in the process
+#' # and loading an exposed Stan function next to it segfaults on Linux.
+#' lpdf <- cogmod_rdm_lpdf_expose()
+#' lpdf(
+#'   Y = 0.5, mu = 2, driftone = 1.5, sigmabias = 0.2, boundary = 0.5,
+#'   ndt = 0.2, poutlier = 0.02, dec = 0
+#' )
 #' }
 #'
 #' @export

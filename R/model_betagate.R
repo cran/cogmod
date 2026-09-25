@@ -355,14 +355,14 @@ real cogmod_betagate_lpdf(real y, real mu, real phi, real pex, real bex) {
 
 #' @rdname rcogmod_betagate
 #' @examples
-#' \donttest{
-#' # Exposing the Stan function needs cmdstanr and a CmdStan toolchain,
-#' # which live outside CRAN - see the package website to install them.
-#' if (requireNamespace("cmdstanr", quietly = TRUE) &&
-#'     !is.null(cmdstanr::cmdstan_version(error_on_NA = FALSE))) {
-#'   lpdf <- cogmod_betagate_lpdf_expose()
-#'   lpdf(y = 0.5, mu = 0.6, phi = 10, pex = 0.2, bex = 0.5)
-#' }
+#' \dontrun{
+#' # Needs cmdstanr and a CmdStan toolchain, which live outside CRAN - see the
+#' # package website to install them. Not run under R CMD check, which executes
+#' # every example in one R session: once brms has fitted a model there (the
+#' # cogmod_inits() and p_outlier() examples do), rstan is live in the process
+#' # and loading an exposed Stan function next to it segfaults on Linux.
+#' lpdf <- cogmod_betagate_lpdf_expose()
+#' lpdf(y = 0.5, mu = 0.6, phi = 10, pex = 0.2, bex = 0.5)
 #' }
 #'
 #' @export

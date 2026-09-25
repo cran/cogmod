@@ -9,6 +9,7 @@
 #' Functions:
 #' - `rcogmod_weibull()`: Simulates random draws.
 #' - `dcogmod_weibull()`: Computes the density (likelihood).
+#' - `pcogmod_weibull()`: Computes the cumulative distribution function (CDF) or survival.
 #' - `cogmod_weibull()`: Creates a `brms::custom_family()`.
 #' - `cogmod_weibull_stanvars()`: Generates the `stanvars` to pass to `brm()`.
 #'
@@ -20,7 +21,7 @@
 #' and [with_outliers()], [without_outliers()], [p_outlier()] and
 #' [cogmod_priors()] all work here too. See `?rcogmod_lognormal` for why `ndt` is
 #' expressed directly in seconds rather than as a fraction of the fastest
-#' observed response, what the half Student-t outlier component is for, and why
+#' observed response, what the half Normal outlier component is for, and why
 #' the outlier component's scale is a constant rather than a `dpar`, and why
 #' reaction times have to be in seconds.
 #'
@@ -41,7 +42,7 @@
 #' - `mu > 2`: bounded gradient. `mu > 3` additionally bounds the curvature.
 #'
 #' The middle regime is the one to watch, because nothing warns about it. On the
-#' 4285-trial lexical-decision data in `vignette("rt_models")` the shape comes
+#' 4285-trial lexical-decision data in the [RT models article](https://dominiquemakowski.github.io/cogmod/articles/rt_models.html) the shape comes
 #' out at 1.4, `ndt` lands at 0.40 s inside the dense left edge of the data, and
 #' the sampler's step size collapses to 0.005 against 0.19 for
 #' [cogmod_lognormal()] on the same data: mean treedepth 8.1 against 3.9, which
@@ -92,7 +93,7 @@
 #' samples in a third of the time with no divergences.
 #'
 #' The slow sampling and the poor fit are the same fact, not two problems.
-#' Across the ten families fitted in `vignette("rt_models")` the Weibull comes
+#' Across the ten families fitted in the [RT models article](https://dominiquemakowski.github.io/cogmod/articles/rt_models.html) the Weibull comes
 #' **last** by `loo`, 196 elpd (SE 21) behind [cogmod_loggamma()] and 95 behind
 #' the next worst. What the sampler struggles with is the model contorting
 #' itself - pushing the shift up into the data, pulling the shape toward 1 - to
@@ -164,6 +165,15 @@ dcogmod_weibull <- function(x, mu = 2, sigma = 0.5, ndt = 0.2, poutlier = 0,
                       log = FALSE) {
   .dshifted("cogmod_weibull", x = x, ndt = ndt, poutlier = poutlier,
                log = log, mu = mu, sigma = sigma)
+}
+
+
+#' @rdname rcogmod_weibull
+#' @export
+pcogmod_weibull <- function(q, mu = 2, sigma = 0.5, ndt = 0.2, poutlier = 0,
+                            lower.tail = TRUE, log.p = FALSE) {
+  .pshifted("cogmod_weibull", q = q, ndt = ndt, poutlier = poutlier,
+            lower.tail = lower.tail, log.p = log.p, mu = mu, sigma = sigma)
 }
 
 

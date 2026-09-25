@@ -11,6 +11,7 @@
 #' Functions:
 #' - `rcogmod_bisa()`: Simulates random draws.
 #' - `dcogmod_bisa()`: Computes the density (likelihood).
+#' - `pcogmod_bisa()`: Computes the cumulative distribution function (CDF) or survival.
 #' - `cogmod_bisa()`: Creates a `brms::custom_family()`.
 #' - `cogmod_bisa_stanvars()`: Generates the `stanvars` to pass to `brm()`.
 #'
@@ -164,6 +165,15 @@ dcogmod_bisa <- function(x, mu = 3, boundary = 0.5, ndt = 0.2, poutlier = 0,
                          log = FALSE) {
   .dshifted("cogmod_bisa", x = x, ndt = ndt, poutlier = poutlier, log = log,
             mu = mu, boundary = boundary)
+}
+
+
+#' @rdname rcogmod_bisa
+#' @export
+pcogmod_bisa <- function(q, mu = 3, boundary = 0.5, ndt = 0.2, poutlier = 0,
+                         lower.tail = TRUE, log.p = FALSE) {
+  .pshifted("cogmod_bisa", q = q, ndt = ndt, poutlier = poutlier,
+            lower.tail = lower.tail, log.p = log.p, mu = mu, boundary = boundary)
 }
 
 

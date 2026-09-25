@@ -19,21 +19,57 @@
 #' @details
 #' # Parameterization
 #'
-#' Each accumulator `k` finishes at a LogNormal time with `meanlog = -nu_k` and
-#' `sdlog = sigma_k`, so **larger `nu` means faster**. The observed reaction time
-#' is `ndt + min(T_0, T_1)` and the observed choice is whichever accumulator got
-#' there first.
+#' Each accumulator `k` runs from a start point `z_k ~ Uniform(0, sigmabias)` to
+#' the threshold `1 + sigmabias` at a rate `v_k ~ LogNormal(nu_k, sigma_k)`, so
+#' its finishing time is `(1 + sigmabias - z_k) / v_k`. With `sigmabias = 0` -
+#' the default of `rcogmod_lnr()` and `dcogmod_lnr()`, and the value to fix in
+#' the formula unless the design can identify a start-point range - the
+#' distance is 1, the finishing time is `1 / v_k`, and it is LogNormal with
+#' `meanlog = -nu_k` and `sdlog = sigma_k`: the LNR proper, in which **larger
+#' `nu` means faster**. The observed reaction time is `ndt + min(T_0, T_1)` and
+#' the observed choice is whichever accumulator got there first.
+#'
+#' # The start-point range
+#'
+#' The LNR is the LBA ([rcogmod_lba2()]) with LogNormal drift rates and the
+#' start point removed. In an LBA the finishing time is the distance to the
+#' threshold divided by the rate; if both are LogNormal the ratio is LogNormal
+#' too, with the two log-variances summed into one `sigma`, which is why the
+#' LNR of Heathcote and Love (2012) has no start-point parameter of its own -
+#' start-point and rate variability cannot be told apart. A *Uniform* start
+#' point is a different matter: the distance is then `Uniform(1, 1 + sigmabias)`
+#' and the ratio is no longer LogNormal, so `sigmabias` is identified, at least
+#' in principle, through the shape it gives the RT distribution.
+#'
+#' The threshold *offset* above the highest start point is pinned at 1, the
+#' LBA's `boundary` convention with `boundary = 1`. It has to be the threshold
+#' rather than `sigma` that pins the evidence scale: rescaling the evidence axis
+#' shifts `nu` and scales `sigmabias` and the threshold but leaves a LogNormal
+#' rate's `sigma` untouched, so `sigma = 1` would fix nothing. `sigmabias` is
+#' therefore read in units of that offset: `sigmabias = 1` says the start point
+#' varies over as wide a band as the one above it.
+#'
+#' Estimating `sigmabias` is treacherous in the same way as in [cogmod_lba1()].
+#' As it approaches zero the likelihood goes flat - the model is converging to
+#' the LNR and once the range is small enough making it smaller changes nothing
+#' - while the softplus link reaches zero only at minus infinity. Left flat
+#' that is an improper posterior; [cogmod_priors()] fences it. A start-point
+#' range is also hard to identify from RT shape alone, and the general density
+#' costs about four normal CDFs per accumulator where the LNR costs one density
+#' and one survival. Fix `sigmabias = 0` in the formula unless the design
+#' speaks to start-point variability; at zero the family computes exactly what
+#' it computed before the parameter existed, at the same cost.
 #'
 #' `ndt` is expressed **directly, in seconds** (through a log link in the `brms`
 #' family). Nothing about it is taken from the data: it is not bounded by the
 #' fastest observed response, so a non-decision time that varies by condition or
 #' by participant can exceed the sample minimum wherever the data support it.
 #'
-#' This replaces the earlier `tau` / `minrt` pair, in which `ndt = tau * minrt`
-#' with `minrt` set to the fastest observed RT. That capped the non-decision
-#' time at an order statistic of the sample, so any condition or participant
-#' whose true `ndt` exceeded the fastest observed response was inexpressible,
-#' and the misfit surfaced as spurious effects on the race parameters.
+#' Tying `ndt` to the fastest observed response would cap it at an order
+#' statistic of the sample, so any condition or participant whose true `ndt`
+#' exceeded that response would be inexpressible, and the misfit would surface
+#' as spurious effects on the race parameters. Expressing it directly is what
+#' avoids that.
 #'
 #' # The outlier component
 #'
@@ -66,8 +102,7 @@
 #'
 #' The outlier component's scale is a constant in seconds, and so are the
 #' priors [cogmod_priors()] supplies. There is no argument for changing the
-#' unit: the `minrt` argument that used to rescale the component was removed in
-#' 0.2.1. Millisecond data fails silently rather than loudly - the outlier
+#' unit. Millisecond data fails silently rather than loudly - the outlier
 #' component contributes nothing and the min-RT boundary comes back. See the
 #' corresponding section of [cogmod_lognormal()] for the full account, which
 #' applies unchanged here.
@@ -76,7 +111,8 @@
 #'
 #' ```r
 #' f <- brms::bf(RT | dec(Error) ~ Condition, nuone ~ Condition,
-#'               sigmazero ~ 1, sigmaone ~ 1, ndt ~ 1, poutlier ~ 1,
+#'               sigmazero ~ 1, sigmaone ~ 1, sigmabias = 0,
+#'               ndt ~ 1, poutlier ~ 1,
 #'               family = cogmod_lnr())
 #' brms::brm(f, data = df,
 #'           prior    = cogmod_priors(f, df),
@@ -140,6 +176,11 @@
 #' @param sigmazero,sigmaone The log-space standard deviation for both
 #'   accumulators (choice 0 and 1). Controls the variability of reaction times.
 #'   Must be positive (0, Inf). Larger values increase variability.
+#' @param sigmabias Start-point range, in units of the threshold offset: each
+#'   accumulator starts at `Uniform(0, sigmabias)` and runs to the threshold
+#'   `1 + sigmabias`. Must be non-negative. At `0` (the default) both start at
+#'   zero on every trial and the model is the plain LNR; see the section on
+#'   the start-point range.
 #' @param ndt Non-decision time (shift parameter), in seconds. Represents the
 #'   time taken for processes unrelated to the decision (e.g., encoding, motor
 #'   response). Must be non-negative. Range: [0, Inf).
@@ -152,6 +193,9 @@
 #'   The lognormal race: A cognitive-process model of choice and latency with desirable
 #'   psychometric properties. Psychometrika, 80(2), 491-513.
 #'   \doi{10.1007/s11336-013-9396-3}
+#' - Heathcote, A., & Love, J. (2012). Linear deterministic accumulator models of
+#'   simple choice. Frontiers in Psychology, 3, 292.
+#'   \doi{10.3389/fpsyg.2012.00292}
 #'
 #' @return `rcogmod_lnr()` returns a data frame with `n` rows and two columns,
 #'   `rt` (the simulated reaction time, in seconds) and `response` (the
@@ -167,7 +211,10 @@
 #'   called by `brms` rather than directly: `log_lik_cogmod_lnr()` returns a
 #'   numeric vector holding one log-likelihood value per posterior draw for
 #'   observation `i`, and `posterior_predict_cogmod_lnr()` a draws x 2 matrix
-#'   of reaction times and choices simulated for observation `i`.
+#'   of reaction times and choices simulated for observation `i` - or, given a
+#'   vector of observation indices, a `(draws * length(i))` x 2 matrix with the
+#'   draws for `i[1]` first, which predicts many observations in one vectorised
+#'   call; see [posterior_predict_cogmod_ddm()] for the recipe.
 #'   `posterior_epred_cogmod_lnr()` returns nothing: the expected reaction
 #'   time of a race has no closed form, so it errors rather than report one -
 #'   summarise `posterior_predict()` draws instead.
@@ -186,9 +233,10 @@
 #'
 #' @export
 rcogmod_lnr <- function(n, nuzero = 0, nuone = 0, sigmazero = 1, sigmaone = 1,
-                        ndt = 0.2, poutlier = 0) {
-  .rchoice("cogmod_lnr", n = n, ndt = ndt, poutlier = poutlier, mu = nuzero, nuone = nuone, sigmazero = sigmazero,
-           sigmaone = sigmaone)
+                        ndt = 0.2, sigmabias = 0, poutlier = 0) {
+  .rchoice("cogmod_lnr", n = n, ndt = ndt, poutlier = poutlier, mu = nuzero,
+           nuone = nuone, sigmazero = sigmazero, sigmaone = sigmaone,
+           sigmabias = sigmabias)
 }
 
 
@@ -199,12 +247,75 @@ rcogmod_lnr <- function(n, nuzero = 0, nuone = 0, sigmazero = 1, sigmaone = 1,
 #' @param log Logical; if TRUE, returns the log-density. Default: FALSE.
 #' @export
 dcogmod_lnr <- function(x, nuzero = 0, nuone = 0, sigmazero = 1, sigmaone = 1,
-                        ndt = 0.2, response, poutlier = 0, log = FALSE) {
+                        ndt = 0.2, response, sigmabias = 0, poutlier = 0,
+                        log = FALSE) {
   .dchoice("cogmod_lnr", x = x, response = response, ndt = ndt,
            poutlier = poutlier, log = log,
            mu = nuzero, nuone = nuone, sigmazero = sigmazero,
-           sigmaone = sigmaone)
+           sigmaone = sigmaone, sigmabias = sigmabias)
 }
+
+
+# Decision component ------------------------------------------------------
+
+# The LNR is a race between two of the accumulators cogmod_lognormal() is: each
+# runs from z ~ Uniform(0, sigmabias) to the threshold 1 + sigmabias at a rate
+# v ~ LogNormal(nu, sigma), so its finishing time is a LogNormal(-nu, sigma)
+# time multiplied by a Uniform(1, 1 + sigmabias) distance. The kernels - the
+# density, both tails, the threshold-offset pin and the numerics - live in
+# core_shifted.R with the LogNormal family (.lognormal_acc_ldens() and
+# friends); they take the finishing time's meanlog, which is -nu here. At
+# sigmabias = 0 they call the plain lognormal functions, so the LNR proper
+# costs what it did before the parameter existed. See ?rcogmod_lnr.
+
+# Defective log-density of one race outcome: the winner finishing at t while
+# the loser has not. `.ldec_choice()` masks out `t <= 0` and restores the shape
+# afterwards, so this only has to work elementwise; everything is flattened
+# because `p_outlier()` passes draws x observations matrices.
+#' @keywords internal
+.lnr_ldens <- function(t, k, p) {
+  nu_win <- as.vector(ifelse(k == 0, p$mu, p$nuone))
+  s_win <- as.vector(ifelse(k == 0, p$sigmazero, p$sigmaone))
+  nu_los <- as.vector(ifelse(k == 0, p$nuone, p$mu))
+  s_los <- as.vector(ifelse(k == 0, p$sigmaone, p$sigmazero))
+  tv <- as.vector(t)
+  aa <- as.vector(p$sigmabias)
+  .lognormal_acc_ldens(tv, -nu_win, s_win, aa) +
+    .lognormal_acc_lccdf(tv, -nu_los, s_los, aa)
+}
+
+
+# Decision-component sampler. 1 / v ~ LogNormal(-nu, sigma) is drawn directly
+# and first, so at sigmabias = 0 the stream is exactly what rcogmod_lnr() drew
+# before the parameter existed; the distances multiply it afterwards.
+#' @keywords internal
+.lnr_rng <- function(n, p) {
+  r0 <- stats::rlnorm(n, meanlog = -p$mu, sdlog = p$sigmazero)
+  r1 <- stats::rlnorm(n, meanlog = -p$nuone, sdlog = p$sigmaone)
+  d0 <- 1 + stats::runif(n, min = 0, max = p$sigmabias)
+  d1 <- 1 + stats::runif(n, min = 0, max = p$sigmabias)
+  t0 <- d0 * r0
+  t1 <- d1 * r1
+  list(rt = pmin(t0, t1), response = as.numeric(t0 >= t1))
+}
+
+
+# The kernels are shared with cogmod_lognormal() (see .LOGNORMAL_STAN_PRELUDE
+# in core_shifted.R); only the race on top of them is specific to this family.
+#' @keywords internal
+.LNR_STAN_PRELUDE <- paste0(
+  .LOGNORMAL_STAN_PRELUDE,
+  "
+// Defective log-density of one LNR race outcome at decision time t: the winner
+// finishing just then while the loser has not finished at all. Each accumulator
+// is cogmod_lognormal()'s, with meanlog = -nu.
+real cogmod_lnr_decision_lpdf(real t, real nu_win, real s_win,
+                              real nu_los, real s_los, real sigmabias) {
+  return cogmod_lognormal_acc_ldens(t, -nu_win, s_win, sigmabias)
+       + cogmod_lognormal_acc_logsurv(t, -nu_los, s_los, sigmabias);
+}
+"
+)
 
 
 # Family ------------------------------------------------------------------
@@ -215,6 +326,10 @@ dcogmod_lnr <- function(x, nuzero = 0, nuone = 0, sigmazero = 1, sigmaone = 1,
 #'   family to be called `mu`, so that is the name the formula and this
 #'   argument use, and `nuzero` is what it means.
 #' @param link_sigmazero,link_sigmaone Link function for the sigma parameters.
+#' @param link_sigmabias Link function for the start-point range. Softplus, so
+#'   that the natural-scale value reaches zero only at minus infinity - see
+#'   the start-point range section for why the range is best fixed at zero in
+#'   the formula rather than estimated.
 #' @param link_ndt,link_poutlier Link functions for the non-decision time and
 #'   the outlier rate.
 #' @param predict_outliers Logical; whether `posterior_predict()` should include
@@ -229,13 +344,15 @@ cogmod_lnr <- function(
   link_nuone = "identity",
   link_sigmazero = "softplus",
   link_sigmaone = "softplus",
+  link_sigmabias = "softplus",
   link_ndt = "log",
   link_poutlier = "logit",
   predict_outliers = FALSE
 ) {
   .choice_family(
     "cogmod_lnr",
-    links = c(link_mu, link_nuone, link_sigmazero, link_sigmaone),
+    links = c(link_mu, link_nuone, link_sigmazero, link_sigmaone,
+              link_sigmabias),
     predict_outliers = predict_outliers
   )
 }
@@ -251,17 +368,17 @@ cogmod_lnr <- function(
 
 #' @rdname rcogmod_lnr
 #' @examples
-#' \donttest{
-#' # Exposing the Stan function needs cmdstanr and a CmdStan toolchain,
-#' # which live outside CRAN - see the package website to install them.
-#' if (requireNamespace("cmdstanr", quietly = TRUE) &&
-#'     !is.null(cmdstanr::cmdstan_version(error_on_NA = FALSE))) {
-#'   lpdf <- cogmod_lnr_lpdf_expose()
-#'   lpdf(
-#'     Y = 0.5, mu = 0.5, nuone = 0.2, sigmazero = 1.0, sigmaone = 0.8,
-#'     ndt = 0.2, poutlier = 0.02, dec = 0
-#'   )
-#' }
+#' \dontrun{
+#' # Needs cmdstanr and a CmdStan toolchain, which live outside CRAN - see the
+#' # package website to install them. Not run under R CMD check, which executes
+#' # every example in one R session: once brms has fitted a model there (the
+#' # cogmod_inits() and p_outlier() examples do), rstan is live in the process
+#' # and loading an exposed Stan function next to it segfaults on Linux.
+#' lpdf <- cogmod_lnr_lpdf_expose()
+#' lpdf(
+#'   Y = 0.5, mu = 0.5, nuone = 0.2, sigmazero = 1.0, sigmaone = 0.8,
+#'   ndt = 0.2, poutlier = 0.02, dec = 0
+#' )
 #' }
 #'
 #' @export

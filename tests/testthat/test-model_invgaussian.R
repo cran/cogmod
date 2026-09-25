@@ -138,15 +138,87 @@ test_that("pcogmod_invgaussian matches rcogmod_invgaussian and has correct prope
         valid_idx <- p_values > 0
         expect_equal(p_log[valid_idx], log(p_values[valid_idx]), tolerance = 1e-7,
                      label = paste(label, "- CDF log.p=TRUE"))
-        # Check that where p_values is 0, log.p is -Inf
-        expect_true(all(p_log[!valid_idx] == -Inf),
-                    label = paste(label, "- CDF log.p=TRUE gives -Inf for p=0"))
+        # Where the probability underflows to 0, the log-scale answer is not
+        # -Inf but the actual log-probability: just above the shift the Wald CDF
+        # is of order exp(-boundary^2 / (2 t)), and log.p = TRUE exists precisely
+        # so that a number like -500 survives. Below the log of the smallest
+        # double is the only thing to require of it.
+        expect_true(all(p_log[!valid_idx] < log(.Machine$double.xmin)),
+                    label = paste(label, "- CDF log.p=TRUE stays on the log scale for p=0"))
 
       }
     }
   }
 })
 
+
+
+test_that("the Wald density, CDF and survival agree with statmod", {
+  # Everything else in this file holds the package to itself: R against Stan,
+  # the CDF against the integrated density, the sampler against both. Those
+  # catch the two implementations drifting apart, not an error they share.
+  # statmod's inverse Gaussian (Giner & Smyth, 2016) is a separate lineage,
+  # written on the log scale for the same reason ours is, and rtdists holds its
+  # own Wald to it (rtdists/rtdists#26, #27). Its parameterisation is the
+  # inverse Gaussian's: mean = boundary / drift, shape = boundary^2.
+  skip_if_not_installed("statmod")
+
+  g <- expand.grid(t = c(0.02, 0.05, 0.2, 0.5, 1, 2, 5, 20),
+                   drift = c(0.1, 0.5, 1, 3, 8, 20),
+                   boundary = c(0.1, 0.5, 1, 2, 5, 20))
+  m <- g$boundary / g$drift
+  s <- g$boundary^2
+
+  # Density, natural and log scale. The log scale is compared where statmod's
+  # own answer is finite: below about exp(-745) it has nothing to compare to.
+  expect_equal(
+    dcogmod_invgaussian(g$t, drift = g$drift, boundary = g$boundary, ndt = 0),
+    statmod::dinvgauss(g$t, mean = m, shape = s),
+    tolerance = 1e-12
+  )
+  ld <- dcogmod_invgaussian(g$t, drift = g$drift, boundary = g$boundary,
+                            ndt = 0, log = TRUE)
+  ref <- statmod::dinvgauss(g$t, mean = m, shape = s, log = TRUE)
+  ok <- is.finite(ref)
+  expect_true(all(abs(ld[ok] - ref[ok]) <= 1e-11 * pmax(1, abs(ref[ok]))))
+
+  # CDF and survival, both tails, both scales. On the log scale a survival of
+  # -600 is an ordinary number for both implementations, so it is compared as
+  # one rather than through exp().
+  expect_equal(
+    pcogmod_invgaussian(g$t, drift = g$drift, boundary = g$boundary, ndt = 0),
+    statmod::pinvgauss(g$t, mean = m, shape = s),
+    tolerance = 1e-14
+  )
+  for (lower in c(TRUE, FALSE)) {
+    lp <- pcogmod_invgaussian(g$t, drift = g$drift, boundary = g$boundary,
+                              ndt = 0, lower.tail = lower, log.p = TRUE)
+    ref <- statmod::pinvgauss(g$t, mean = m, shape = s, lower.tail = lower,
+                              log.p = TRUE)
+    ok <- is.finite(ref) & ref > -700
+    expect_true(all(abs(lp[ok] - ref[ok]) <= 1e-10 * pmax(1, abs(ref[ok]))),
+                info = sprintf("lower.tail = %s", lower))
+  }
+
+  # The regime rtdists/rtdists#27 was about: 2 * boundary * drift = 800 here,
+  # so exp(2 a v) overflows and Phi(-(a + v t) / sqrt(t)) underflows, and the
+  # CDF is only right if their product is kept as one exponent. A natural-scale
+  # `exp(2 a v) * Phi(.)` - or `log(Phi(.))` inside the exponent, which is
+  # what rtdists had - loses the whole second term.
+  t <- c(0.9, 0.99, 1, 1.05, 1.2)
+  expect_equal(pcogmod_invgaussian(t, drift = 20, boundary = 20, ndt = 0),
+               statmod::pinvgauss(t, mean = 1, shape = 400),
+               tolerance = 1e-12)
+  expect_equal(pcogmod_invgaussian(Inf, drift = 20, boundary = 20, ndt = 0), 1)
+
+  # ndt is a shift and nothing else.
+  expect_equal(
+    pcogmod_invgaussian(g$t + 0.25, drift = g$drift, boundary = g$boundary,
+                        ndt = 0.25),
+    statmod::pinvgauss(g$t, mean = m, shape = s),
+    tolerance = 1e-14
+  )
+})
 
 
 context("Inv-Gaussian (Shifted Wald) - brms")
@@ -229,7 +301,7 @@ test_that("Stan cogmod_invgaussian_lpdf matches R dcogmod_invgaussian function",
                                           ndt = ndt_val, sigmadrift = sigmadrift,
                                           poutlier = pout, log = TRUE)
               stan_loglik <- cogmod_invgaussian_lpdf(Y = y_val, mu = mu_val, boundary = boundary,
-                                                 sigmadrift = sigmadrift,
+                                                 sigmadrift = sigmadrift, sigmandt = 0,
                                                  ndt = ndt_val, poutlier = pout)
               expect_equal(stan_loglik, r_loglik, tolerance = 1e-8, label = label)
             }
@@ -247,12 +319,12 @@ test_that("Stan cogmod_invgaussian_lpdf matches R dcogmod_invgaussian function",
   y_below <- 0.15
   expect_equal(
     cogmod_invgaussian_lpdf(Y = y_below, mu = mu_val, boundary = alpha_val,
-                        sigmadrift = 0, ndt = ndt_val, poutlier = 0),
+                        sigmadrift = 0, sigmandt = 0, ndt = ndt_val, poutlier = 0),
     -Inf, label = "Y < ndt, poutlier = 0")
 
   # ...but with one it keeps positive density, which is the whole point
   lp <- cogmod_invgaussian_lpdf(Y = y_below, mu = mu_val, boundary = alpha_val,
-                            sigmadrift = 0, ndt = ndt_val, poutlier = 0.02)
+                            sigmadrift = 0, sigmandt = 0, ndt = ndt_val, poutlier = 0.02)
   expect_true(is.finite(lp))
   expect_equal(lp, dcogmod_invgaussian(y_below, drift = mu_val, boundary = alpha_val,
                                    ndt = ndt_val, poutlier = 0.02, log = TRUE),
@@ -261,25 +333,27 @@ test_that("Stan cogmod_invgaussian_lpdf matches R dcogmod_invgaussian function",
   # Y exactly at ndt behaves the same way
   expect_equal(
     cogmod_invgaussian_lpdf(Y = ndt_val, mu = mu_val, boundary = alpha_val,
-                        sigmadrift = 0, ndt = ndt_val, poutlier = 0),
+                        sigmadrift = 0, sigmandt = 0, ndt = ndt_val, poutlier = 0),
     -Inf, label = "Y == ndt")
 
   # Invalid parameters
   expect_equal(cogmod_invgaussian_lpdf(Y = 0.3, mu = -1.0, boundary = alpha_val,
-                                   sigmadrift = 0, ndt = ndt_val, poutlier = 0.02), -Inf)
+                                   sigmadrift = 0, sigmandt = 0, ndt = ndt_val, poutlier = 0.02), -Inf)
   expect_equal(cogmod_invgaussian_lpdf(Y = 0.3, mu = mu_val, boundary = 0.0,
-                                   sigmadrift = 0, ndt = ndt_val, poutlier = 0.02), -Inf)
+                                   sigmadrift = 0, sigmandt = 0, ndt = ndt_val, poutlier = 0.02), -Inf)
   expect_equal(cogmod_invgaussian_lpdf(Y = 0.3, mu = mu_val, boundary = alpha_val,
-                                   sigmadrift = -1, ndt = ndt_val, poutlier = 0.02), -Inf)
+                                   sigmadrift = -1, sigmandt = 0, ndt = ndt_val, poutlier = 0.02), -Inf)
   expect_equal(cogmod_invgaussian_lpdf(Y = 0.3, mu = mu_val, boundary = alpha_val,
-                                   sigmadrift = 0, ndt = -0.1, poutlier = 0.02), -Inf)
+                                   sigmadrift = 0, sigmandt = -0.1, ndt = ndt_val, poutlier = 0.02), -Inf)
   expect_equal(cogmod_invgaussian_lpdf(Y = 0.3, mu = mu_val, boundary = alpha_val,
-                                   sigmadrift = 0, ndt = ndt_val, poutlier = 1.1), -Inf)
+                                   sigmadrift = 0, sigmandt = 0, ndt = -0.1, poutlier = 0.02), -Inf)
+  expect_equal(cogmod_invgaussian_lpdf(Y = 0.3, mu = mu_val, boundary = alpha_val,
+                                   sigmadrift = 0, sigmandt = 0, ndt = ndt_val, poutlier = 1.1), -Inf)
 
   # ndt = 0 is now an ordinary interior value, not a boundary
   expect_equal(
     cogmod_invgaussian_lpdf(Y = 0.1, mu = mu_val, boundary = alpha_val,
-                        sigmadrift = 0, ndt = 0, poutlier = 0),
+                        sigmadrift = 0, sigmandt = 0, ndt = 0, poutlier = 0),
     dcogmod_invgaussian(0.1, drift = mu_val, boundary = alpha_val, ndt = 0, log = TRUE),
     tolerance = 1e-8, label = "ndt = 0")
 })
@@ -428,7 +502,8 @@ test_that("a zero drift SD is legal but a negative one is not", {
 
 test_that("the family carries sigmadrift and it can be fixed in the formula", {
   fam <- cogmod_invgaussian()
-  expect_equal(fam$dpars, c("mu", "boundary", "sigmadrift", "ndt", "poutlier"))
+  expect_equal(fam$dpars,
+               c("mu", "boundary", "sigmadrift", "sigmandt", "ndt", "poutlier"))
   expect_equal(fam$lb$sigmadrift, "0")
   expect_equal(fam$link_sigmadrift, "softplus")
 
@@ -503,8 +578,10 @@ test_that("posterior_epred has no mean to return once the drift varies", {
   # E[T] diverges for sigmadrift > 0: the density decays as t^-2, because a
   # drift arbitrarily close to zero takes arbitrarily long.
   spec <- cogmod:::.shifted_spec("cogmod_invgaussian")
-  expect_equal(spec$mean(list(mu = 3, boundary = 0.5, sigmadrift = 0)), 0.5 / 3)
-  expect_equal(spec$mean(list(mu = 3, boundary = 0.5, sigmadrift = 0.01)), Inf)
+  expect_equal(spec$mean(list(mu = 3, boundary = 0.5, sigmadrift = 0, sigmandt = 0)),
+               0.5 / 3)
+  expect_equal(spec$mean(list(mu = 3, boundary = 0.5, sigmadrift = 0.01, sigmandt = 0)),
+               Inf)
 
   # and the tail really is t^-2, so the constant below settles rather than the
   # density decaying faster. Its limit is
@@ -517,4 +594,233 @@ test_that("posterior_epred has no mean to return once the drift varies", {
                0.5 * exp(-3^2 / (2 * 0.5^2)) /
                  (2 * 0.5 * sqrt(2 * pi) * stats::pnorm(3 / 0.5)),
                tolerance = 0.01)
+})
+
+
+# sigmandt: a non-decision time spread over a range ------------------------
+
+test_that("sigmandt = 0 changes nothing, to the bit", {
+  # The parameter is routed around for exactly the elements with a positive
+  # range, so a zero range - the default, and what every pre-existing formula
+  # fixes - returns what the family returned before the parameter existed.
+  t <- c(0.21, 0.3, 0.5, 1, 3)
+  for (sv in c(0, 0.8)) {
+    expect_identical(
+      dcogmod_invgaussian(t, 3, 0.5, 0.2, sigmadrift = sv, sigmandt = 0, log = TRUE),
+      dcogmod_invgaussian(t, 3, 0.5, 0.2, sigmadrift = sv, log = TRUE)
+    )
+    for (lower in c(TRUE, FALSE)) {
+      expect_identical(
+        pcogmod_invgaussian(t, 3, 0.5, 0.2, sigmadrift = sv, sigmandt = 0,
+                            lower.tail = lower, log.p = TRUE),
+        pcogmod_invgaussian(t, 3, 0.5, 0.2, sigmadrift = sv,
+                            lower.tail = lower, log.p = TRUE)
+      )
+    }
+  }
+  # Including the random stream: the uniform offset is drawn only when some
+  # trial has a range.
+  set.seed(1); a <- rcogmod_invgaussian(50, sigmandt = 0)
+  set.seed(1); b <- rcogmod_invgaussian(50)
+  expect_identical(a, b)
+  # And in a mixed vector the zero-range elements are still the closed form.
+  st0 <- c(0, 0.05, 0, 0.1, 0)
+  expect_identical(
+    dcogmod_invgaussian(t, sigmandt = st0, log = TRUE)[st0 == 0],
+    dcogmod_invgaussian(t, log = TRUE)[st0 == 0]
+  )
+})
+
+
+test_that("the smeared Wald is the fixed-shift one averaged over the range", {
+  # Brute force: (1 / st0) * INT_0^st0 f(y | ndt + u) du, at times that put the
+  # interval [y - ndt - st0, y - ndt] entirely above the shift and straddling
+  # it, with and without the drift quadrature underneath.
+  for (sv in c(0, 0.7)) {
+    for (st0 in c(0.03, 0.15)) {
+      y <- 0.2 + c(0.005, 0.02, st0 * 0.9, st0 * 1.1, 0.2, 0.6, 1.5, 3)
+      info <- sprintf("sigmadrift %.1f sigmandt %.2f", sv, st0)
+      ref <- vapply(y, function(yy) {
+        stats::integrate(function(u) {
+          dcogmod_invgaussian(yy, 3, 0.5, 0.2 + u, sigmadrift = sv)
+        }, 0, st0, rel.tol = 1e-12)$value / st0
+      }, numeric(1))
+      got <- dcogmod_invgaussian(y, 3, 0.5, 0.2, sigmadrift = sv, sigmandt = st0)
+      expect_equal(got, ref, tolerance = 1e-8, info = info)
+
+      # The CDF integrates that density and the survival completes it - the
+      # survival computed AS a survival, since that is what cens() scores.
+      dens <- function(s) dcogmod_invgaussian(s, 3, 0.5, 0.2, sigmadrift = sv,
+                                              sigmandt = st0)
+      cdf <- vapply(y, function(yy) {
+        stats::integrate(dens, 0, yy, rel.tol = 1e-12)$value
+      }, numeric(1))
+      surv <- vapply(y, function(yy) {
+        stats::integrate(dens, yy, Inf, rel.tol = 1e-12)$value
+      }, numeric(1))
+      pF <- pcogmod_invgaussian(y, 3, 0.5, 0.2, sigmadrift = sv, sigmandt = st0)
+      pS <- pcogmod_invgaussian(y, 3, 0.5, 0.2, sigmadrift = sv, sigmandt = st0,
+                                lower.tail = FALSE)
+      expect_equal(pF, cdf, tolerance = 1e-10, info = info)
+      expect_equal(pS / surv, rep(1, length(y)), tolerance = 1e-8, info = info)
+      expect_equal(pF + pS, rep(1, length(y)), tolerance = 1e-12, info = info)
+    }
+  }
+})
+
+
+test_that("the integrated Wald CDF and survival are the ones written down", {
+  # I(t) = INT_0^t F and R(t) = INT_t^Inf S, each checked against adaptive
+  # integration of the fixed-drift CDF and survival they integrate. These two
+  # are what make the smeared CDF closed form.
+  Fw <- function(s) exp(cogmod:::.log_pwald_fixed(s, 3, 0.5))
+  Sw <- function(s) exp(cogmod:::.lswald_fixed(s, 3, 0.5))
+  for (t in c(0.05, 0.1, 0.2, 0.5, 1, 3)) {
+    expect_equal(exp(cogmod:::.lwald_liF_fixed(t, 3, 0.5)),
+                 stats::integrate(Fw, 0, t, rel.tol = 1e-12)$value,
+                 tolerance = 1e-10, info = t)
+    expect_equal(exp(cogmod:::.lwald_liS_fixed(t, 3, 0.5)),
+                 stats::integrate(Sw, t, Inf, rel.tol = 1e-12)$value,
+                 tolerance = 1e-10, info = t)
+  }
+  # R(0) is the mean, and below the shift the survival is 1.
+  expect_equal(exp(cogmod:::.lwald_liS_fixed(1e-300, 3, 0.5)), 0.5 / 3,
+               tolerance = 1e-8)
+})
+
+
+test_that("the smeared density is continuous across its branches and into zero", {
+  # The kernel has a midpoint branch below st0 / t = 1e-5, where the difference
+  # quotient has lost its digits, and a tail choice at F(midpoint) = 1/2. A log
+  # link never reaches zero, so the sampler visits small ranges routinely and
+  # the branches have to meet.
+  t <- c(0.21, 0.3, 1, 3)
+  for (what in c("dens", "cdf", "surv")) {
+    f <- function(st0) cogmod:::.lwald_raw(t, 3, 0.5, 0, st0, what)
+    base <- f(0)
+    prev <- Inf
+    for (st0 in c(1e-3, 1e-5, 1e-7, 1e-9)) {
+      gap <- max(abs(f(rep(st0, 4)) - base))
+      expect_lt(gap, prev, label = sprintf("%s sigmandt = %g", what, st0))
+      prev <- gap
+    }
+    expect_lt(prev, 1e-7)
+    # Either side of the switch.
+    above <- f(1e-5 * t * (1 + 1e-6))
+    below <- f(1e-5 * t * (1 - 1e-6))
+    expect_lt(max(abs(above - below)), 1e-7, label = what)
+  }
+  # And across the tail choice: a range wide enough that the midpoint's CDF
+  # passes 1/2 somewhere inside a fine grid of times.
+  y <- seq(0.25, 1.2, by = 0.0005)
+  ld <- dcogmod_invgaussian(y, 3, 0.5, 0.2, sigmandt = 0.1, log = TRUE)
+  expect_true(all(is.finite(ld)))
+  expect_lt(max(abs(diff(ld, differences = 2))), 1e-3)
+})
+
+
+test_that("the smeared Wald stays on the log scale at both ends", {
+  # Just above the shift the CDF is of order exp(-boundary^2 / (2 t)); far out
+  # the survival is exp(-drift^2 t / 2). Both have to come back as numbers,
+  # not as -Inf or NaN, with a range as without one.
+  lF <- pcogmod_invgaussian(0.2 + c(1e-4, 1e-6), 3, 0.5, 0.2, sigmandt = 0.05,
+                            log.p = TRUE)
+  expect_true(all(is.finite(lF) & lF < -1000))
+  lS <- pcogmod_invgaussian(c(3, 6, 20), 3, 0.5, 0.2, sigmandt = 0.05,
+                            lower.tail = FALSE, log.p = TRUE)
+  expect_true(all(is.finite(lS)) && all(diff(lS) < 0))
+  # Roughly the fixed-shift decay rate.
+  expect_equal((lS[3] - lS[2]) / 14, -3^2 / 2, tolerance = 0.05)
+  ld <- dcogmod_invgaussian(c(0.2001, 20), 3, 0.5, 0.2, sigmandt = 0.05,
+                            log = TRUE)
+  expect_true(all(is.finite(ld)))
+})
+
+
+test_that("a mixed vector of ranges and drift SDs takes each branch it needs", {
+  # Zero and positive ranges, fixed and variable drifts, in one call: four
+  # code paths, each subsetting by its own mask.
+  st0 <- c(0, 0.05, 1e-8, 0.1, 0)
+  sv <- c(0, 0, 0.5, 0.5, 0.5)
+  t <- c(0.25, 0.4, 0.6, 0.9, 2)
+  each <- function(f, ...) {
+    vapply(1:5, function(i) f(t[i], 3, 0.5, 0.2, sv[i], st0[i], ...), numeric(1))
+  }
+  expect_identical(dcogmod_invgaussian(t, 3, 0.5, 0.2, sv, st0, log = TRUE),
+                   each(dcogmod_invgaussian, log = TRUE))
+  expect_identical(pcogmod_invgaussian(t, 3, 0.5, 0.2, sv, st0, log.p = TRUE),
+                   each(pcogmod_invgaussian, log.p = TRUE))
+  expect_identical(
+    pcogmod_invgaussian(t, 3, 0.5, 0.2, sv, st0, lower.tail = FALSE, log.p = TRUE),
+    each(pcogmod_invgaussian, lower.tail = FALSE, log.p = TRUE)
+  )
+})
+
+
+test_that("rcogmod_invgaussian spreads the non-decision time over the range", {
+  set.seed(3)
+  r <- rcogmod_invgaussian(2e5, 3, 0.5, 0.2, sigmandt = 0.1, poutlier = 0)
+  expect_gte(min(r), 0.2)
+  # E[RT] = ndt + boundary / drift + sigmandt / 2
+  expect_equal(mean(r), 0.2 + 0.5 / 3 + 0.05, tolerance = 0.01)
+  qs <- quantile(r, c(0.01, 0.1, 0.5, 0.9, 0.99))
+  expect_equal(unname(ecdf(r)(qs)),
+               pcogmod_invgaussian(unname(qs), 3, 0.5, 0.2, sigmandt = 0.1),
+               tolerance = 0.005)
+  # A negative range is rejected like every other bad parameter.
+  expect_warning(expect_equal(dcogmod_invgaussian(0.5, sigmandt = -0.1), 0),
+                 "sigmandt")
+  expect_error(rcogmod_invgaussian(5, sigmandt = -0.1), "sigmandt")
+})
+
+
+test_that("the family carries sigmandt on a log link with the DDM's prior", {
+  fam <- cogmod_invgaussian()
+  expect_equal(fam$link_sigmandt, "log")
+  expect_equal(fam$lb$sigmandt, "0")
+  spec <- cogmod:::.shifted_spec("cogmod_invgaussian")
+  expect_equal(spec$mean(list(mu = 3, boundary = 0.5, sigmadrift = 0, sigmandt = 0.1)),
+               0.5 / 3 + 0.05)
+  expect_equal(spec$mean(list(mu = 3, boundary = 0.5, sigmadrift = 0.1, sigmandt = 0.1)),
+               Inf)
+
+  skip_if_not_installed("brms")
+  d <- data.frame(RT = rcogmod_invgaussian(100, ndt = 0.2, poutlier = 0.02))
+  # Omitted: estimated on the natural scale, and fenced with the DDM's prior.
+  f_free <- brms::bf(RT ~ 1, boundary ~ 1, sigmadrift = 0, ndt ~ 1,
+                     poutlier ~ 1, family = cogmod_invgaussian())
+  pr <- as.data.frame(cogmod_priors(f_free, d))
+  expect_equal(pr$prior[pr$class == "sigmandt"], "lognormal(-3, 1)")
+  # Modelled: on the link scale.
+  f_mod <- brms::bf(RT ~ 1, boundary ~ 1, sigmadrift = 0, sigmandt ~ 1,
+                    ndt ~ 1, poutlier ~ 1, family = cogmod_invgaussian())
+  pr <- as.data.frame(cogmod_priors(f_mod, d))
+  expect_equal(pr$prior[pr$dpar == "sigmandt" & pr$class == "Intercept"],
+               "normal(-3, 1)")
+  # Fixed: gone.
+  f_fixed <- brms::bf(RT ~ 1, boundary ~ 1, sigmadrift = 0, sigmandt = 0,
+                      ndt ~ 1, poutlier ~ 1, family = cogmod_invgaussian())
+  expect_false(any(as.data.frame(cogmod_priors(f_fixed, d))$dpar == "sigmandt"))
+  # Inits follow the same two forms.
+  expect_equal(cogmod_inits(f_free, d)()$sigmandt, 0.05, tolerance = 0.3)
+  expect_equal(exp(cogmod_inits(f_mod, d)()$Intercept_sigmandt), 0.05,
+               tolerance = 0.3)
+})
+
+
+test_that("the smeared Wald agrees with rtdists's st0, where rtdists has one", {
+  # rtdists/rtdists#26 gives its shifted Wald a closed-form st0 at A = 0, the
+  # same model under the same convention (t0 the lower bound). Until it merges
+  # and ships, the installed rtdists has no dwald() with an st0 argument.
+  skip_if_not_installed("rtdists")
+  dw <- tryCatch(get("dwald", envir = asNamespace("rtdists")),
+                 error = function(e) NULL)
+  skip_if(is.null(dw) || !"st0" %in% names(formals(dw)),
+          "installed rtdists has no st0 for the Wald")
+  rt <- seq(0.22, 1.5, length.out = 20)
+  expect_equal(
+    dcogmod_invgaussian(rt, 3, 0.5, 0.2, sigmandt = 0.1),
+    dw(rt, A = 0, b = 0.5, t0 = 0.2, v = 3, st0 = 0.1),
+    tolerance = 1e-8
+  )
 })

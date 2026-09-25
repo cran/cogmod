@@ -42,27 +42,57 @@
 #' fastest observed response, so a non-decision time that varies by condition or
 #' by participant can exceed the sample minimum wherever the data support it.
 #'
-#' This replaces the earlier `tau` / `minrt` pair, in which `ndt = tau * minrt`
-#' with `minrt` set to the fastest observed RT. That capped the non-decision
-#' time at an order statistic of the sample, so any condition or participant
-#' whose true `ndt` exceeded the fastest observed response was inexpressible,
-#' and the misfit surfaced as spurious effects on the race parameters.
+#' Tying `ndt` to the fastest observed response would cap it at an order
+#' statistic of the sample, so any condition or participant whose true `ndt`
+#' exceeded that response would be inexpressible, and the misfit would surface
+#' as spurious effects on the race parameters. Expressing it directly is what
+#' avoids that.
 #'
 #' # Negative drift rates
 #'
-#' A normal drift rate can come out negative, and such an accumulator rises
-#' away from the threshold and never responds. A trial on which *both* drifts
-#' are negative produces no response at all, so it is not a trial: the process
-#' is conditioned on at least one of the two being positive, and
-#' `rcogmod_lba2()` draws from exactly that conditional distribution.
+#' A Normal drift rate can come out negative, and such an accumulator rises
+#' away from the threshold and never responds. Brown and Heathcote (2008) noted
+#' the problem and left it; every implementation since has had to decide what
+#' to do about it, and this one follows the convention of `rtdists`
+#' (`posdrift = TRUE`, its default), `DMC`, `EMC2` and `ggdmc`: **each drift
+#' rate is a Normal truncated at zero**. Every accumulator is then guaranteed a
+#' positive rate on every trial, every trial produces a response, and the
+#' losing accumulator's survival is that of a truncated Normal.
+#' `rcogmod_lba2()` draws each drift from exactly that truncated distribution.
 #'
-#' The density is conditioned to match, dividing by
-#' `1 - pnorm(-driftzero / sigmazero) * pnorm(-driftone / sigmaone)`. Without
-#' that factor the density integrates to the probability of the event rather
-#' than to one, which at low drift rates is a long way short - `0.83` at drifts
-#' of `0.5` and `0.2` with SDs of `1.5`, so the likelihood is wrong by 17% and
-#' wrong by *different* amounts at different parameter values, which is what
-#' makes it bias estimates rather than merely offset them.
+#' The density is normalised to match: the winner's defective density is
+#' divided by its own `pnorm(drift / sigma)`, and the loser's survival is taken
+#' conditional on its own drift being positive. Without the truncation the
+#' density integrates to the probability that at least one accumulator finishes
+#' rather than to one, which at low drift rates is a long way short - `0.83`
+#' at drifts of `0.5` and `0.2` with SDs of `1.5`, so the likelihood would be
+#' wrong by 17% and wrong by *different* amounts at different parameter values,
+#' which is what biases estimates rather than merely offsetting them.
+#'
+#' Two consequences are worth knowing. First, because the convention is the
+#' field's, parameter estimates are **directly comparable** with those packages'
+#' and with the published LBA literature built on them, and [dcogmod_lba2()]
+#' reproduces `rtdists::dLBA()` at the same parameter values. Second, `drift`
+#' and `sigma` are the location and scale of the *untruncated* Normal, not the
+#' mean and SD of the drifts actually realised: where a drift is small relative
+#' to its SD, the realised mean is higher and the realised SD lower than the
+#' parameters say. That is the price every implementation pays for a race that
+#' always finishes; with both drifts large relative to their SDs it is
+#' negligible.
+#'
+#' The truncation also creates a flat direction. A Normal truncated at zero
+#' whose location runs off to minus infinity while its scale grows, with
+#' `|drift| / sigma^2` held fixed, converges to an Exponential, so once an
+#' accumulator rarely wins its `drift` and `sigma` are identified only through
+#' that ratio, and the likelihood is nearly flat along the ray. The error
+#' accumulator in a task with a 5% error rate is exactly such a case: left
+#' flat, its drift wandered to `-12` with an interval of `-23` to `-6.5`, on an
+#' evidence scale where the correct accumulator's drift is `3`.
+#' [cogmod_priors()] therefore puts `normal(1, 2)` on `driftone` and
+#' `normal(0, 1.5)` on its slopes, as it does for [cogmod_lnr()]'s `nuone`. If
+#' the *rarely* chosen option is the one on `mu`, mirror that prior onto `mu`
+#' by hand. Fixing both SDs (`sigmazero = 1, sigmaone = 1`, a single `sv`)
+#' removes the ray altogether and is common practice in the LBA literature.
 #'
 #' # The evidence scale is arbitrary
 #'
@@ -116,8 +146,7 @@
 #'
 #' The outlier component's scale is a constant in seconds, and so are the
 #' priors [cogmod_priors()] supplies. There is no argument for changing the
-#' unit: the `minrt` argument that used to rescale the component was removed in
-#' 0.2.1. Millisecond data fails silently rather than loudly - the outlier
+#' unit. Millisecond data fails silently rather than loudly - the outlier
 #' component contributes nothing and the min-RT boundary comes back. See the
 #' corresponding section of [cogmod_lognormal()] for the full account, which
 #' applies unchanged here.
@@ -283,8 +312,11 @@ cogmod_lba2 <- function(
 
 # Log-density of the race at decision time `t` (already net of the non-decision
 # time) for the accumulator named by `k`: that accumulator's defective density
-# times the other one's survival, divided by the probability that at least one
-# drift is positive - the event the process is conditioned on.
+# times the other one's survival, each accumulator's drift being a Normal
+# truncated at zero. The truncation divides the winner's density by its own
+# P(v > 0); the loser's survival is already conditional on its own drift being
+# positive (see .lba_lsurv_trunc()). This is the convention of rtdists
+# (`posdrift = TRUE`), DMC, EMC2 and ggdmc - see ?rcogmod_lba2.
 #
 # `.ldec_choice()` masks out `t <= 0` and restores the shape afterwards, so this
 # only has to work elementwise. Everything is flattened first because
@@ -304,64 +336,31 @@ cogmod_lba2 <- function(
   stw <- pmax(s_win * tv, 1e-10)
   f <- .lba_dens_over_A(v_win, s_win, stw, (bb - v_win * tv) / stw, aa / stw)
   stl <- pmax(s_los * tv, 1e-10)
-  surv <- .lba_surv_raw(v_los, s_los, stl, (bb - v_los * tv) / stl, aa / stl)
+  lsurv <- .lba_lsurv_trunc(v_los, s_los, (bb - v_los * tv) / stl, aa / stl)
+  # log P(v_win > 0), the winner's truncation constant
+  lpos <- stats::pnorm(v_win / s_win, log.p = TRUE)
 
-  # log P(both drifts negative). At -Inf (the ordinary case) log1m_exp is 0 and
-  # the normalisation costs nothing; at 0 the model says neither accumulator
-  # ever responds, so the observed response is impossible.
-  lq <- stats::pnorm(-v_win / s_win, log.p = TRUE) +
-    stats::pnorm(-v_los / s_los, log.p = TRUE)
-
-  ok <- f > 0 & surv > 0 & lq < 0
+  ok <- f > 0 & is.finite(lsurv) & is.finite(lpos)
   out <- rep(-Inf, length(tv))
   if (any(ok)) {
-    out[ok] <- log(f[ok]) + log(surv[ok]) - .log1m_exp(lq[ok])
+    out[ok] <- log(f[ok]) - lpos[ok] + lsurv[ok]
   }
   out
 }
 
 
 # Decision-component sampler. Both drifts and both start points are drawn afresh
-# per trial, conditioned on at least one drift being positive.
-#
-# That condition is imposed exactly rather than by rejection. Writing
-# `q_k = P(v_k <= 0)`, the conditional law splits into two disjoint cases:
-# accumulator 0 positive (probability `(1 - q0) / (1 - q0 q1)`), with
-# accumulator 1 unconstrained; or accumulator 0 non-positive and accumulator 1
-# positive. Sampling the case first and then the truncated normals reproduces
-# the conditional joint distribution with no loop to bound - and so no
-# `max_iter` argument, and no fallback that quietly draws from the wrong
-# distribution when the loop runs out.
+# per trial, each drift from its Normal truncated at zero, so every accumulator
+# finishes and the race always produces a response.
 #' @keywords internal
 .lba2_rng <- function(n, p) {
-  lq0 <- stats::pnorm(-p$mu / p$sigmazero, log.p = TRUE)
-  lq1 <- stats::pnorm(-p$driftone / p$sigmaone, log.p = TRUE)
-  # P(at least one positive drift), via expm1 so that it stays accurate when
-  # both accumulators are near-certain to fail.
-  denom <- -expm1(lq0 + lq1)
-  first <- stats::runif(n) < stats::pnorm(p$mu / p$sigmazero) / denom
-
-  v0 <- numeric(n)
-  v1 <- numeric(n)
-  if (any(first)) {
-    i <- which(first)
-    v0[i] <- .rnorm_truncated(length(i), p$mu[i], p$sigmazero[i], lower = 0)
-    v1[i] <- stats::rnorm(length(i), p$driftone[i], p$sigmaone[i])
-  }
-  if (any(!first)) {
-    i <- which(!first)
-    v0[i] <- .rnorm_truncated(length(i), p$mu[i], p$sigmazero[i], upper = 0)
-    v1[i] <- .rnorm_truncated(length(i), p$driftone[i], p$sigmaone[i],
-                              lower = 0)
-  }
-
+  v0 <- .rnorm_truncated(n, p$mu, p$sigmazero, lower = 0)
+  v1 <- .rnorm_truncated(n, p$driftone, p$sigmaone, lower = 0)
   b <- p$sigmabias + p$boundary
   z0 <- stats::runif(n, min = 0, max = p$sigmabias)
   z1 <- stats::runif(n, min = 0, max = p$sigmabias)
-  # A non-positive drift rises away from the threshold and never gets there.
-  t0 <- ifelse(v0 > 0, (b - z0) / v0, Inf)
-  t1 <- ifelse(v1 > 0, (b - z1) / v1, Inf)
-
+  t0 <- (b - z0) / v0
+  t1 <- (b - z1) / v1
   list(rt = pmin(t0, t1), response = as.numeric(t0 >= t1))
 }
 
@@ -377,10 +376,11 @@ cogmod_lba2 <- function(
 // Defective log-density of one LBA race outcome at decision time t: the winner
 // reaching the threshold just then, while the loser has not reached it at all.
 //
-// The subtraction is the conditioning: a trial on which both drifts came out
-// negative produces no response, so it is not a trial, and the density has to
-// be divided by the probability that at least one of them is positive. Without
-// it the density integrates to that probability rather than to one.
+// Each drift is a Normal truncated at zero, so the winner's density is divided
+// by its own P(v > 0) and the loser's survival is taken conditional on its
+// own drift being positive. Without the truncation an accumulator could draw a
+// negative drift and never finish, and the density would integrate to the
+// probability that at least one of them does rather than to one.
 real cogmod_lba2_decision_lpdf(real t, real v_win, real s_win,
                                real v_los, real s_los,
                                real sigmabias, real boundary) {
@@ -391,13 +391,9 @@ real cogmod_lba2_decision_lpdf(real t, real v_win, real s_win,
 
   real stl = fmax(s_los * t, 1e-10);
   real z1l = (boundary - v_los * t) / stl;
-  real surv = cogmod_lba_surv(z1l, sigmabias / stl);
-  if (surv <= 0) return negative_infinity();
+  real lsurv = cogmod_lba_lsurv_trunc(v_los, s_los, z1l, sigmabias / stl);
 
-  real lq = std_normal_lcdf(-v_win / s_win) + std_normal_lcdf(-v_los / s_los);
-  if (lq >= 0) return negative_infinity();
-
-  return log(f) + log(surv) - log1m_exp(lq);
+  return log(f) - std_normal_lcdf(v_win / s_win) + lsurv;
 }
 "
 )
@@ -411,17 +407,17 @@ real cogmod_lba2_decision_lpdf(real t, real v_win, real s_win,
 
 #' @rdname rcogmod_lba2
 #' @examples
-#' \donttest{
-#' # Exposing the Stan function needs cmdstanr and a CmdStan toolchain,
-#' # which live outside CRAN - see the package website to install them.
-#' if (requireNamespace("cmdstanr", quietly = TRUE) &&
-#'     !is.null(cmdstanr::cmdstan_version(error_on_NA = FALSE))) {
-#'   lpdf <- cogmod_lba2_lpdf_expose()
-#'   lpdf(
-#'     Y = 0.5, mu = 3, driftone = 2, sigmazero = 1, sigmaone = 1,
-#'     sigmabias = 0.5, boundary = 0.5, ndt = 0.2, poutlier = 0.02, dec = 0
-#'   )
-#' }
+#' \dontrun{
+#' # Needs cmdstanr and a CmdStan toolchain, which live outside CRAN - see the
+#' # package website to install them. Not run under R CMD check, which executes
+#' # every example in one R session: once brms has fitted a model there (the
+#' # cogmod_inits() and p_outlier() examples do), rstan is live in the process
+#' # and loading an exposed Stan function next to it segfaults on Linux.
+#' lpdf <- cogmod_lba2_lpdf_expose()
+#' lpdf(
+#'   Y = 0.5, mu = 3, driftone = 2, sigmazero = 1, sigmaone = 1,
+#'   sigmabias = 0.5, boundary = 0.5, ndt = 0.2, poutlier = 0.02, dec = 0
+#' )
 #' }
 #'
 #' @export

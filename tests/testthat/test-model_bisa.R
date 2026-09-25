@@ -157,7 +157,7 @@ test_that("the family, its priors and its epred are wired up", {
   # own; cogmod_priors() fills ndt and poutlier and leaves the rest blanket.
   p <- expect_silent(cogmod_priors(f, d))
   expect_equal(p$prior[p$class == "Intercept" & p$dpar == "ndt"],
-               "normal(-1.2, 0.2)")
+               "normal(-1.2, 0.5)")
   expect_equal(p$prior[p$class == "Intercept" & p$dpar == "poutlier"],
                "normal(-5, 1)")
 

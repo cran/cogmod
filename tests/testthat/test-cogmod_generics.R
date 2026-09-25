@@ -71,8 +71,11 @@ test_that("cogmod_inits puts the targets on the right scale", {
   f <- brms::bf(RT ~ 1, sigma ~ 1, ndt ~ 1, poutlier ~ 1,
                 family = cogmod_lognormal())
   vals <- cogmod_inits(f, d_ig, jitter = 0)(1)
-  # ndt starts at 0.1 s, a third of its prior median, on the log link
-  expect_equal(vals$Intercept_ndt, log(0.1))
+  # ndt starts below the data - half the first percentile of the responses -
+  # on the log link
+  ndt0 <- 0.5 * quantile(d_ig$RT, 0.01, names = FALSE)
+  expect_lt(ndt0, quantile(d_ig$RT, 0.01))
+  expect_equal(vals$Intercept_ndt, log(ndt0))
   expect_equal(vals$Intercept_poutlier, qlogis(0.02))
   # mu has an identity link here, sigma a softplus one
   expect_equal(vals$Intercept, -0.7)
@@ -85,7 +88,7 @@ test_that("cogmod_inits leaves an omitted dpar on the natural scale", {
   vals <- cogmod_inits(f, d_ig, jitter = 0)(1)
   # Omitted from the formula, so brms declares it as a plain auxiliary
   # parameter with no link applied.
-  expect_equal(vals$ndt, 0.1)
+  expect_equal(vals$ndt, 0.5 * quantile(d_ig$RT, 0.01, names = FALSE))
   expect_equal(vals$poutlier, 0.02)
 })
 
@@ -106,7 +109,7 @@ test_that("cogmod_inits gives the target to `Intercept` under 0 + Intercept", {
   # There is no Intercept_ndt to set: the coefficient named Intercept inside
   # b_ndt is the intercept, and the slope beside it is a slope.
   expect_null(vals$Intercept_ndt)
-  expect_equal(vals$b_ndt, c(log(0.1), 0))
+  expect_equal(vals$b_ndt, c(log(0.5 * quantile(d_ig$RT, 0.01, names = FALSE)), 0))
 })
 
 
@@ -137,6 +140,41 @@ test_that("cogmod_inits jitters without leaving the bounds", {
 })
 
 
+test_that("cogmod_inits jitters the hierarchical blocks less", {
+  # A unit of noise on a standardized group effect or a smooth coefficient is
+  # multiplied through a scale and a design column before it reaches the
+  # linear predictor, once per participant or basis function; a unit on an
+  # intercept is a unit. So the hierarchical blocks get a fifth of the jitter.
+  set.seed(3)
+  dd <- cbind(d_ig, x = rnorm(nrow(d_ig)))
+  f <- brms::bf(RT ~ s(x) + (1 | id), ndt ~ (1 | id),
+                family = cogmod_invgaussian())
+  inits <- cogmod_inits(f, dd)
+  draws <- replicate(400, inits(1), simplify = FALSE)
+  first <- function(name) vapply(draws, function(v) v[[name]][1], numeric(1))
+  expect_equal(stats::sd(first("Intercept")), 0.25, tolerance = 0.15)
+  expect_equal(stats::sd(first("z_1")), 0.05, tolerance = 0.15)
+  expect_equal(stats::sd(first("zs_1_1")), 0.05, tolerance = 0.15)
+  # the scales are jittered on the log scale, where the tier's SD applies
+  expect_equal(stats::sd(log(first("sd_1"))), 0.05, tolerance = 0.15)
+
+  # a smooth starts near flat; a group-level SD keeps the generic start
+  fixed <- cogmod_inits(f, dd, jitter = 0)(1)
+  expect_true(all(fixed$sds_1_1 == 0.05))
+  expect_true(all(fixed$sd_1 == 0.25))
+
+  # two numbers set the tiers directly
+  two <- cogmod_inits(f, dd, jitter = c(0.5, 0))
+  a <- two(1)
+  b <- two(2)
+  expect_identical(a$z_1, b$z_1)
+  expect_identical(a$zs_1_1, b$zs_1_1)
+  expect_false(identical(a$Intercept, b$Intercept))
+  expect_error(cogmod_inits(f, dd, jitter = -1), "jitter")
+  expect_error(cogmod_inits(f, dd, jitter = c(1, 2, 3)), "jitter")
+})
+
+
 # cogmod_inits: families --------------------------------------------------
 
 test_that("cogmod_inits supports cogmod_exgaussian", {
@@ -159,12 +197,59 @@ test_that("cogmod_inits supports cogmod_exgaussian", {
 })
 
 
+test_that("cogmod_inits supports the bounded-scale families", {
+  d <- data.frame(
+    y = rcogmod_choco(150, pmid = 0.05),
+    Condition = rep(c("a", "b"), 75)
+  )
+  f <- brms::bf(y ~ Condition, precright ~ 1, pex ~ 1, pmid ~ 1,
+                family = cogmod_choco())
+  vals <- cogmod_inits(f, d, jitter = 0)(1)
+  expect_setequal(names(vals), declared_params(f, d))
+  # `precright` is a Beta precision behind `softplus`, the other two are
+  # probabilities behind `logit`, so each start goes through its own link.
+  expect_equal(vals$Intercept_precright, log(expm1(2)))
+  expect_equal(vals$Intercept_pex, stats::qlogis(0.1))
+  expect_equal(vals$Intercept_pmid, stats::qlogis(0.05))
+
+  # Omitted from the formula: natural scale, no link.
+  omitted <- cogmod_inits(brms::bf(y ~ 1, family = cogmod_choco()), d,
+                          jitter = 0)(1)
+  expect_equal(omitted$precleft, 2)
+  expect_equal(omitted$pmid, 0.05)
+  expect_equal(omitted$bex, 0.5)
+
+  # cogmod_betadiscrete() takes `k` through vint(), so it is also the one check
+  # here that an addition term reaches make_standata() intact.
+  dd <- data.frame(rating = rcogmod_betadiscrete(150, k = 7), k = 7L)
+  fb <- brms::bf(rating | vint(k) ~ 1, phi ~ 1, pzero ~ 1,
+                 family = cogmod_betadiscrete())
+  vb <- cogmod_inits(fb, dd, jitter = 0)(1)
+  expect_setequal(names(vb), declared_params(fb, dd))
+  expect_equal(vb$Intercept_phi, log(1))
+  expect_equal(vb$Intercept_pzero, stats::qlogis(0.05))
+
+  # Fixed in bf(): brms declares no parameter for it, so neither does this.
+  fixed <- brms::bf(rating | vint(k) ~ 1, pzero = 0,
+                    family = cogmod_betadiscrete())
+  expect_false("pzero" %in% names(cogmod_inits(fixed, dd, jitter = 0)(1)))
+})
+
+
 test_that("cogmod_inits refuses a family it has nothing to offer", {
   expect_error(
     cogmod_inits(brms::bf(RT ~ 1, family = brms::lognormal()), d_ig),
     "nothing to offer"
   )
   expect_error(cogmod_inits(RT ~ 1, d_ig), "none found on the formula")
+
+  # The list that message prints is derived from the targets rather than kept
+  # beside them, so it cannot leave one out - which it did, silently, for
+  # cogmod_geg().
+  for (fam in cogmod:::.init_families()) {
+    build <- get(fam, envir = asNamespace("cogmod"))
+    expect_false(is.null(cogmod:::.init_targets(build())), label = fam)
+  }
 })
 
 
@@ -196,6 +281,32 @@ test_that("cogmod_priors returns rows that match real parameters", {
   p <- cogmod_priors(f, d_ig)
   expect_s3_class(p, "brmsprior")
   expect_true(any(p$dpar == "ndt" & p$class == "Intercept" & nzchar(p$prior)))
+})
+
+# brms fills the blanket `sds` row of a smooth itself and leaves the per-term
+# rows empty, so filling only what arrives empty never reached it: a smooth on
+# `ndt` kept student_t(3, 0, 2.5) on its wiggliness scale - the loosest prior
+# in the model, on the link scale of a parameter whose intercept had been fenced
+# on purpose - while ?cogmod_priors promised exponential(1).
+test_that("cogmod_priors sets sds for a smooth on a dpar and leaves mu's alone", {
+  set.seed(4)
+  dd <- transform(d_ig, x = runif(nrow(d_ig)))
+  f <- brms::bf(RT ~ s(x), ndt ~ s(x), poutlier ~ 1, family = cogmod_lognormal())
+  p <- cogmod_priors(f, dd)
+  sds <- p[p$class == "sds", ]
+  # the blanket row is the one brms uses, and it is the one set
+  expect_equal(sds$prior[sds$dpar == "ndt" & sds$coef == ""], "exponential(1)")
+  expect_true(all(sds$prior[sds$dpar == "ndt" & nzchar(sds$coef)] == ""))
+  # the response's own smooth keeps brms's default, like its slopes do
+  expect_equal(sds$prior[sds$dpar == "" & sds$coef == ""], "student_t(3, 0, 2.5)")
+  # and a grouping term on the same dpar still gets its per-group row
+  g <- brms::bf(RT ~ 1, ndt ~ s(x) + (1 | id), poutlier ~ 1,
+                family = cogmod_lognormal())
+  q <- cogmod_priors(g, dd)
+  expect_equal(q$prior[q$class == "sd" & q$dpar == "ndt" & q$group == "id" &
+                         q$coef == ""], "exponential(1)")
+  expect_equal(q$prior[q$class == "sds" & q$dpar == "ndt" & q$coef == ""],
+               "exponential(1)")
 })
 
 # cogmod_exgaussian is not on the ndt + poutlier mixture, but `sigma` and `tau`
@@ -238,6 +349,112 @@ test_that("cogmod_priors sets sigma and tau for cogmod_exgaussian", {
     cogmod_priors(brms::bf(RT ~ Condition, family = brms::brmsfamily("gaussian")), d),
     "nothing to add"
   )
+})
+
+
+test_that("cogmod_priors fences the bounded-scale families", {
+  set.seed(4)
+  d <- data.frame(
+    y = rcogmod_choco(200, pmid = 0.05),
+    Condition = factor(rep(c("a", "b"), length.out = 200)),
+    id = factor(rep(1:10, length.out = 200))
+  )
+  pick <- function(p, cls, dpar, coef = "") {
+    p$prior[p$class == cls & p$dpar == dpar & p$coef == coef]
+  }
+
+  f <- brms::bf(y ~ Condition, confright ~ 1, confleft ~ 1, precright ~ 1,
+                precleft ~ 1, pex ~ Condition, bex ~ 1, pmid ~ 1,
+                family = cogmod_choco())
+  p <- expect_silent(cogmod_priors(f, d))
+  expect_equal(pick(p, "Intercept", "confright"), "normal(0, 1)")
+  expect_equal(pick(p, "Intercept", "precright"), "normal(2, 1.5)")
+  expect_equal(pick(p, "Intercept", "pex"), "normal(-2, 1)")
+  expect_equal(pick(p, "Intercept", "bex"), "normal(0, 1)")
+  expect_equal(pick(p, "Intercept", "pmid"), "normal(-2.5, 1)")
+  expect_equal(pick(p, "b", "pex"), "normal(0, 0.5)")
+  # `mu` is the response's own predictor on a logit link, where brms'
+  # student_t(3, 0, 2.5) is the standard weakly informative choice. Unlike
+  # cogmod_exgaussian()'s identity-link `mu`, it is left alone.
+  expect_equal(pick(p, "Intercept", ""), "student_t(3, 0, 2.5)")
+
+  # Omitted from bf(): natural scale, and `pmid` swaps to a mode at zero, the
+  # shape a logit-scale prior cannot have. The two agree on the centre.
+  p2 <- expect_silent(cogmod_priors(brms::bf(y ~ 1, family = cogmod_choco()), d))
+  expect_equal(p2$prior[p2$class == "precleft"], "lognormal(0.7, 0.7)")
+  expect_equal(p2$prior[p2$class == "confleft"], "beta(2, 2)")
+  expect_equal(p2$prior[p2$class == "pex"], "beta(2, 12)")
+  expect_equal(p2$prior[p2$class == "pmid"], "exponential(9)")
+  # The two forms differ in shape - only the omitted one has its mode at zero -
+  # but they have to agree on where the parameter is: 0.077 against 0.076.
+  expect_equal(stats::qexp(0.5, 9), stats::plogis(-2.5), tolerance = 0.02)
+
+  # cogmod_betagate()'s `phi` arrives NON-empty - brms recognises the name from
+  # its own beta family - so it has to be overridden rather than filled.
+  fg <- brms::bf(y ~ 1, phi ~ 1, pex ~ 1, bex ~ 1, family = cogmod_betagate())
+  expect_equal(
+    brms::get_prior(fg, data = d, family = cogmod_betagate())$prior[
+      brms::get_prior(fg, data = d, family = cogmod_betagate())$dpar == "phi"],
+    "student_t(3, 0, 2.5)"
+  )
+  pg <- expect_silent(cogmod_priors(fg, d))
+  expect_equal(pick(pg, "Intercept", "phi"), "normal(2, 1.5)")
+
+  # The same override on cogmod_betadiscrete(), where it matters most: `phi` is
+  # on a LOG link there, so student_t(3, 0, 2.5) reaches phi = 2853 at its
+  # 97.5th percentile. Being a log link also makes the two forms one
+  # distribution, unlike the softplus ones above.
+  dd <- data.frame(rating = rcogmod_betadiscrete(200, k = 7), k = 7L,
+                   Condition = d$Condition)
+  fb <- brms::bf(rating | vint(k) ~ Condition, phi ~ 1, pzero ~ 1,
+                 family = cogmod_betadiscrete())
+  pb <- expect_silent(cogmod_priors(fb, dd))
+  expect_equal(pick(pb, "Intercept", "phi"), "normal(0.7, 0.8)")
+  expect_equal(pick(pb, "Intercept", "pzero"), "normal(-2.5, 1)")
+  pb2 <- expect_silent(
+    cogmod_priors(brms::bf(rating | vint(k) ~ 1, family = cogmod_betadiscrete()), dd)
+  )
+  expect_equal(pb2$prior[pb2$class == "phi"], "lognormal(0.7, 0.8)")
+  expect_equal(pb2$prior[pb2$class == "pzero"], "exponential(9)")
+})
+
+
+test_that("every bounded-family prior reaches the Stan program", {
+  set.seed(5)
+  d <- data.frame(y = rcogmod_choco(150, pmid = 0.05), x = stats::rnorm(150),
+                  g = factor(rep(letters[1:10], length.out = 150)))
+  dd <- data.frame(rating = rcogmod_betadiscrete(150, k = 7), k = 7L,
+                   x = d$x, g = d$g)
+  cases <- list(
+    list(brms::bf(y ~ x + (1 | g), confright ~ x, precright ~ 1, pex ~ 1,
+                  bex ~ 1, pmid ~ 1, family = cogmod_choco()), d),
+    list(brms::bf(y ~ x, family = cogmod_choco()), d),
+    list(brms::bf(y ~ x, phi ~ x, pex ~ 1, bex ~ 1, family = cogmod_betagate()), d),
+    list(brms::bf(y ~ x, family = cogmod_betagate()), d),
+    list(brms::bf(rating | vint(k) ~ x + (1 | g), phi ~ 1, pzero ~ 1,
+                  family = cogmod_betadiscrete()), dd),
+    list(brms::bf(rating | vint(k) ~ x, family = cogmod_betadiscrete()), dd)
+  )
+  for (cs in cases) {
+    f <- cs[[1]]
+    da <- cs[[2]]
+    p <- expect_silent(cogmod_priors(f, da))
+    code <- expect_silent(
+      brms::make_stancode(f, data = da, family = f$family, prior = p,
+                          stanvars = cogmod_stanvars(f))
+    )
+    stated <- grep("lprior \\+=", strsplit(code, "\n")[[1]], value = TRUE)
+    # A dpar left improper is the whole failure this function exists to
+    # prevent, so check the Stan program rather than the prior table: every
+    # declared parameter named after a dpar must appear in some prior
+    # statement.
+    decl <- vapply(cogmod:::.stan_param_decls(code), `[[`, character(1), "name")
+    want <- decl[grepl(paste0("^(Intercept_)?(",
+                              paste(f$family$dpars, collapse = "|"), ")$"), decl)]
+    for (v in want) {
+      expect_true(any(grepl(paste0("\\b", v, "\\b"), stated)), label = v)
+    }
+  }
 })
 
 
@@ -494,7 +711,7 @@ test_that("the suite's shared Stan model stands in for *_lpdf_expose()", {
 
   shared <- stan_fun("cogmod_lognormal")
   own <- cogmod_lognormal_lpdf_expose()
-  args <- list(0.9, -0.7, 0.5, 0.3, 0.02)
+  args <- list(0.9, -0.7, 0.5, 0, 0.3, 0.02)  # Y, mu, sigma, sigmabias, ndt, poutlier
   expect_equal(do.call(shared, args), do.call(own, args), tolerance = 1e-12)
 
   # and every family the helper claims to carry is actually in there, so a new
@@ -631,4 +848,284 @@ test_that("a zero-length parameter alongside a real quantile is rejected", {
   # An empty quantile is not the same thing, and is answered rather than
   # refused.
   expect_silent(expect_equal(dcogmod_lognormal(numeric(0)), numeric(0)))
+})
+
+
+# Data checks -------------------------------------------------------------
+
+# .cogmod_checkdata() runs from cogmod_priors(), before anything is compiled.
+# Its whole reason to exist is that the mistakes it looks for are SILENT: a
+# column of milliseconds fits, a third level in dec() is folded into option 1,
+# and both produce a converged model and meaningless estimates.
+
+d_chk <- data.frame(
+  RT = rcogmod_lognormal(200, ndt = 0.2, poutlier = 0.02),
+  resp = rep(0:1, 100),
+  Condition = factor(rep(c("a", "b"), length.out = 200))
+)
+f_chk <- brms::bf(RT ~ Condition, ndt ~ 1, family = cogmod_lognormal())
+f_chk_choice <- brms::bf(RT | dec(resp) ~ Condition, ndt ~ 1,
+                         family = cogmod_lnr())
+
+
+test_that("a clean data frame passes every family in silence", {
+  # The families are swept rather than sampled because the check dispatches on
+  # which registry the family is in, and a new entry should be covered by the
+  # derivation rather than by a list someone remembered to update.
+  for (nm in cogmod:::.OUTLIER_FAMILIES) {
+    fam <- get(nm)()
+    f <- if (nm %in% cogmod:::.CHOICE_FAMILIES) {
+      brms::bf(RT | dec(resp) ~ 1, family = fam)
+    } else {
+      brms::bf(RT ~ 1, family = fam)
+    }
+    expect_silent(cogmod:::.cogmod_checkdata(f, d_chk))
+  }
+})
+
+
+test_that("milliseconds are caught from the median, not from one slow trial", {
+  # `any(rt > 10)` is the obvious test and the wrong one: a single slow trial is
+  # ordinary, and warning about it would train people to ignore the warning that
+  # matters. The whole column moving by three orders of magnitude is the signal.
+  expect_warning(
+    cogmod:::.cogmod_checkdata(f_chk, transform(d_chk, RT = RT * 1000)),
+    "SECONDS"
+  )
+  expect_silent(
+    cogmod:::.cogmod_checkdata(f_chk, transform(d_chk, RT = replace(RT, 1, 42)))
+  )
+})
+
+
+test_that("the tails are judged against what poutlier can absorb", {
+  # rcogmod_lognormal(200, ndt = 0.2, poutlier = 0.02) puts a response at 81 ms
+  # all by itself, so a count-based test fires on the package's own generator.
+  # The outlier component reaches about 2% below 0.1 s at the top of its default
+  # prior, so a handful passes and a fifth of the data does not.
+  few <- transform(d_chk, RT = replace(RT, 1:6, 0.05))   # 3%
+  many <- transform(d_chk, RT = replace(RT, 1:40, 0.05)) # 20%
+  expect_silent(cogmod:::.cogmod_checkdata(f_chk, few))
+  expect_warning(cogmod:::.cogmod_checkdata(f_chk, many), "under 0.1 s")
+
+  expect_silent(
+    cogmod:::.cogmod_checkdata(f_chk, transform(d_chk, RT = replace(RT, 1:6, 30)))
+  )
+  expect_warning(
+    cogmod:::.cogmod_checkdata(f_chk, transform(d_chk, RT = replace(RT, 1:40, 30))),
+    "exceeds 10 s"
+  )
+
+  # cogmod_exgaussian() has neither ndt nor poutlier, so neither message would
+  # be true of it and neither is emitted.
+  f_ex <- brms::bf(RT ~ 1, family = cogmod_exgaussian())
+  expect_silent(cogmod:::.cogmod_checkdata(f_ex, many))
+})
+
+
+test_that("a response the likelihood cannot take is an error, not a warning", {
+  # These are the rows that send the total log-likelihood to -Inf: no chain can
+  # initialise, so failing here saves the compile rather than costing one.
+  expect_error(
+    cogmod:::.cogmod_checkdata(f_chk, transform(d_chk, RT = replace(RT, 1, -1))),
+    "no density below `ndt`"
+  )
+  expect_error(
+    cogmod:::.cogmod_checkdata(f_chk, transform(d_chk, RT = as.character(RT))),
+    "needs a numeric one"
+  )
+  # The ex-Gaussian has support on the whole line, so the same row is
+  # implausible there rather than impossible.
+  expect_warning(
+    cogmod:::.cogmod_checkdata(
+      brms::bf(RT ~ 1, family = cogmod_exgaussian()),
+      transform(d_chk, RT = replace(RT, 1, -1))
+    ),
+    "coding or a merge error"
+  )
+})
+
+
+test_that("a third level in dec() is refused rather than absorbed", {
+  # This is the one that has to be an error. The Stan code tests `dec == 0` and
+  # takes the else branch for everything else, so a third level is silently
+  # folded into option 1 - a fit, and a wrong one.
+  expect_error(
+    cogmod:::.cogmod_checkdata(
+      f_chk_choice, transform(d_chk, resp = replace(resp, 1:2, 2))
+    ),
+    "two-option"
+  )
+  expect_error(
+    cogmod:::.cogmod_checkdata(
+      f_chk_choice,
+      transform(d_chk, resp = factor(rep(c("a", "b", "c"), length.out = 200)))
+    ),
+    "two-option choice"
+  )
+  # What brms itself accepts for dec() passes: 0/1, a logical, two levels.
+  expect_silent(
+    cogmod:::.cogmod_checkdata(f_chk_choice, transform(d_chk, resp = resp == 1))
+  )
+  expect_silent(
+    cogmod:::.cogmod_checkdata(
+      f_chk_choice,
+      transform(d_chk, resp = factor(ifelse(resp == 1, "upper", "lower")))
+    )
+  )
+  # A choice family with no dec() at all reaches Stan as a one-boundary model.
+  expect_error(
+    cogmod:::.cogmod_checkdata(brms::bf(RT ~ 1, family = cogmod_lnr()), d_chk),
+    "dec\\(response\\)"
+  )
+})
+
+
+test_that("the bounded families reject a response off their support", {
+  d_unit <- data.frame(y = c(stats::runif(50), 0, 1))
+  expect_silent(
+    cogmod:::.cogmod_checkdata(
+      brms::bf(y ~ 1, family = cogmod_betagate()), d_unit
+    )
+  )
+  expect_error(
+    cogmod:::.cogmod_checkdata(
+      brms::bf(y ~ 1, family = cogmod_betagate()),
+      transform(d_unit, y = y * 7 - 1)
+    ),
+    "outside \\[0, 1\\]"
+  )
+  d_rate <- data.frame(y = sample(0:5, 60, TRUE))
+  expect_silent(
+    cogmod:::.cogmod_checkdata(
+      brms::bf(y | vint(5) ~ 1, family = cogmod_betadiscrete()), d_rate
+    )
+  )
+  expect_error(
+    cogmod:::.cogmod_checkdata(
+      brms::bf(y | vint(5) ~ 1, family = cogmod_betadiscrete()),
+      transform(d_rate, y = y + 0.5)
+    ),
+    "non-integer"
+  )
+})
+
+
+test_that("a weight pinned at a boundary is checked against the response", {
+  chk <- function(f, d) cogmod:::.cogmod_checkdata(f, d)
+
+  # The pair the documentation actively invites: ?rcogmod_betadiscrete offers
+  # `pzero = 0` for a scale with no zero category, and ?cogmod_priors suggests
+  # fixing `pmid` or `pzero` at 0 to switch the parameter off. Both are fatal
+  # if the column still holds one of those responses, and CmdStan reports it
+  # only as "Initialization failed".
+  d_mid <- data.frame(y = c(stats::runif(20), 0.5))
+  expect_error(
+    chk(brms::bf(y ~ 1, pmid = 0, family = cogmod_choco()), d_mid),
+    "1 of 21 values of `y` are exactly at the midpoint"
+  )
+  d_zero <- data.frame(y = c(sample(1:5, 20, TRUE), 0), k = 5L)
+  expect_error(
+    chk(brms::bf(y | vint(k) ~ 1, pzero = 0, family = cogmod_betadiscrete()), d_zero),
+    "`pzero = 0` in bf\\(\\) gives those zero probability"
+  )
+
+  # Every other way of closing a component is the same mistake, so the check
+  # covers them too: `pex = 0` removes both gates, `bex` at either end removes
+  # one of them, and a weight pinned at 1 leaves nothing for the rest.
+  d_ends <- data.frame(y = c(0.2, 0.4, 0.6, 0, 1))
+  expect_error(chk(brms::bf(y ~ 1, pex = 0, family = cogmod_choco()), d_ends),
+               "exactly 0 or exactly 1")
+  expect_error(chk(brms::bf(y ~ 1, bex = 0, family = cogmod_betagate()), d_ends),
+               "exactly 1")
+  expect_error(chk(brms::bf(y ~ 1, bex = 1, family = cogmod_betagate()), d_ends),
+               "exactly 0")
+  expect_error(chk(brms::bf(y ~ 1, pex = 1, family = cogmod_betagate()), d_ends),
+               "strictly between 0 and 1")
+  expect_error(chk(brms::bf(y ~ 1, pmid = 1, family = cogmod_choco()), d_ends),
+               "other than the midpoint")
+  expect_error(
+    chk(brms::bf(y | vint(k) ~ 1, pzero = 1, family = cogmod_betadiscrete()),
+        data.frame(y = c(0, 0, 3), k = 5L)),
+    "a rating of 1 or more"
+  )
+
+  # The same pins are fine against data that has nothing in the closed
+  # component, which is the whole point of being allowed to write them.
+  expect_silent(chk(brms::bf(y ~ 1, pmid = 0, family = cogmod_choco()),
+                    data.frame(y = c(0, 0.25, 0.75, 1))))
+  expect_silent(chk(brms::bf(y | vint(k) ~ 1, pzero = 0,
+                             family = cogmod_betadiscrete()),
+                    data.frame(y = sample(1:5, 20, TRUE), k = 5L)))
+  expect_silent(chk(brms::bf(y ~ 1, pex = 0, family = cogmod_betagate()),
+                    data.frame(y = c(0.2, 0.5, 0.8))))
+  # As is a pin that closes nothing, and no pin at all.
+  expect_silent(chk(brms::bf(y ~ 1, pmid = 0.05, family = cogmod_choco()), d_mid))
+  expect_silent(chk(brms::bf(y ~ 1, bex = 0.5, family = cogmod_choco()), d_ends))
+  expect_silent(chk(brms::bf(y ~ 1, family = cogmod_choco()), d_mid))
+
+  # A response off the support is reported as that rather than as a pinned
+  # weight - the per-class check runs first.
+  expect_error(
+    chk(brms::bf(y ~ 1, pmid = 0, family = cogmod_choco()),
+        data.frame(y = c(0.5, 2))),
+    "outside \\[0, 1\\]"
+  )
+
+  # A fix this cannot read as one number is left alone rather than guessed at,
+  # the same tolerance .warn_scale_ray() applies.
+  f <- brms::bf(y ~ 1, pmid = 0, family = cogmod_choco())
+  f$pfix$pmid <- quote(some_expression)
+  expect_silent(chk(f, d_mid))
+
+  # Every entry names a real dpar of the family it is filed under, so a
+  # renamed parameter cannot leave a row quietly matching nothing.
+  for (fam in names(cogmod:::.CHECKDATA_PINNED)) {
+    dpars <- get(fam, envir = asNamespace("cogmod"))()$dpars
+    for (e in cogmod:::.CHECKDATA_PINNED[[fam]]) {
+      expect_true(e$dpar %in% dpars, label = paste(fam, e$dpar))
+    }
+  }
+})
+
+
+test_that("anything it cannot read is left for brms to complain about", {
+  # A check that guesses is worse than no check: brms has the better message for
+  # every one of these, and reaching it requires getting out of the way.
+  expect_silent(
+    cogmod:::.cogmod_checkdata(
+      brms::bf(RT ~ Condition, family = stats::gaussian()), d_chk
+    )
+  )
+  expect_silent(cogmod:::.cogmod_checkdata(RT ~ Condition, d_chk))
+  expect_silent(cogmod:::.cogmod_checkdata(f_chk, data.frame(zzz = 1:3)))
+  expect_silent(cogmod:::.cogmod_checkdata(f_chk, d_chk[0, ]))
+})
+
+
+test_that("cogmod_priors warns without disturbing the table it returns", {
+  # The check is a side effect on the way past: warning about the data must not
+  # change what comes back, and an unreadable response has to stop the call
+  # rather than reach brm().
+  p_clean <- expect_silent(cogmod_priors(f_chk, d_chk))
+  ms <- transform(d_chk, RT = RT * 1000)
+  expect_warning(p_ms <- cogmod_priors(f_chk, ms), "SECONDS")
+  expect_equal(nrow(p_ms), nrow(p_clean))
+
+  # And this is the failure the warning exists for, made concrete. The rows
+  # cogmod sets are fixed statements in seconds, so they do not move when the
+  # data changes units - `ndt` stays at normal(-1.2, 0.5), centred on 300 ms,
+  # against responses now averaging 700. The rows brms fills in DO follow the
+  # data, rescaling to student_t(3, 678, 215). Nothing errors, the two halves of
+  # the prior simply stop describing the same quantity, and the fit that follows
+  # is converged and meaningless.
+  ours <- function(p) p$prior[p$dpar == "ndt" | p$class == "poutlier"]
+  expect_equal(ours(p_ms), ours(p_clean))
+  brms_own <- function(p) p$prior[p$class == "Intercept" & p$dpar == ""]
+  expect_false(identical(brms_own(p_ms), brms_own(p_clean)))
+
+  expect_error(
+    cogmod_priors(f_chk, transform(d_chk, RT = replace(RT, 1, -1))),
+    "no density below `ndt`"
+  )
 })

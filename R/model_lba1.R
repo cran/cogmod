@@ -67,6 +67,16 @@
 #' trouble described next applies to it, and [cogmod_priors()] emits no row for
 #' it.
 #'
+#' @section The same accumulator with a LogNormal rate:
+#' The other single-accumulator LBA in the package is [cogmod_lognormal()]:
+#' the same start point `Uniform(0, sigmabias)` and the same threshold offset,
+#' with a LogNormal rather than a truncated-Normal rate, so its `sigmabias = 0`
+#' limit is the shifted LogNormal where this family's is the recinormal. It
+#' lives under that name rather than here because a LogNormal rate's `sigma` is
+#' untouched by rescaling the evidence axis, so the threshold offset has to be
+#' the pin (it is fixed at 1 there) where here `sigma = 1` does the job. Two
+#' such accumulators raced against each other are [cogmod_lnr()].
+#'
 #' @section Estimating the start-point range:
 #' Left free, `sigmabias` is estimable but treacherous, precisely because the
 #' recinormal limit above is reached *smoothly*: once the start-point range is
@@ -74,7 +84,7 @@
 #' goes **flat**. On a `softplus` link zero is at minus infinity, so a flat prior
 #' there leaves the posterior improper, and the symptom is a chain that wanders
 #' off rather than one that fails. Fitted without priors on the 4285-trial data
-#' in `vignette("rt_models")`, `sigmabias` for one condition ran to
+#' in the [RT models article](https://dominiquemakowski.github.io/cogmod/articles/rt_models.html), `sigmabias` for one condition ran to
 #' `softplus(-10.4) = 3e-05` with `Rhat` 1.69 and an effective sample size of 6.
 #'
 #' There are two ways out, and the choice is a modelling decision rather than a

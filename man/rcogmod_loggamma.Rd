@@ -175,6 +175,11 @@ does not give a usable RT model.
 is the log of has its own shape \code{k = 1 / shape^2}. Throughout the docs below,
 "shape" unqualified means this parameter, never \code{k}.
 
+The family has no \code{sigmabias}: the start-point range of \code{\link[=cogmod_lognormal]{cogmod_lognormal()}}
+needs a partial first moment of the rate distribution, which for a log-Gamma
+exists only on part of the \code{shape} range and needs incomplete gamma
+functions, so it is left to the LogNormal (and to \code{\link[=cogmod_lnr]{cogmod_lnr()}}).
+
 It is unconstrained, with \code{shape = 0} in the \emph{interior} rather than at a
 boundary, which is what makes it usable as a free parameter:\tabular{lll}{
    \code{shape} \tab Distribution \tab right tail \cr

@@ -3,6 +3,7 @@
 \name{rcogmod_weibull}
 \alias{rcogmod_weibull}
 \alias{dcogmod_weibull}
+\alias{pcogmod_weibull}
 \alias{cogmod_weibull}
 \alias{cogmod_weibull_lpdf_expose}
 \alias{cogmod_weibull_stanvars}
@@ -14,6 +15,16 @@
 rcogmod_weibull(n, mu = 2, sigma = 0.5, ndt = 0.2, poutlier = 0)
 
 dcogmod_weibull(x, mu = 2, sigma = 0.5, ndt = 0.2, poutlier = 0, log = FALSE)
+
+pcogmod_weibull(
+  q,
+  mu = 2,
+  sigma = 0.5,
+  ndt = 0.2,
+  poutlier = 0,
+  lower.tail = TRUE,
+  log.p = FALSE
+)
 
 cogmod_weibull(
   link_mu = "softplus",
@@ -52,6 +63,14 @@ distribution reduces to the plain shifted LogNormal.}
 \item{x}{Vector of quantiles (observed reaction times).}
 
 \item{log}{Logical; if TRUE, probabilities p are given as log(p).}
+
+\item{q}{Vector of quantiles (reaction times, in seconds).}
+
+\item{lower.tail}{Logical; if TRUE (default), probabilities are \code{P[X <= q]},
+otherwise \code{P[X > q]} - the survival, which is what a right-censored
+response contributes to the likelihood (see the \emph{Censoring} section).}
+
+\item{log.p}{Logical; if TRUE, probabilities p are given as log(p).}
 
 \item{link_mu, link_sigma, link_ndt, link_poutlier}{Link functions for the
 parameters.}
@@ -93,6 +112,7 @@ Functions:
 \itemize{
 \item \code{rcogmod_weibull()}: Simulates random draws.
 \item \code{dcogmod_weibull()}: Computes the density (likelihood).
+\item \code{pcogmod_weibull()}: Computes the cumulative distribution function (CDF) or survival.
 \item \code{cogmod_weibull()}: Creates a \code{brms::custom_family()}.
 \item \code{cogmod_weibull_stanvars()}: Generates the \code{stanvars} to pass to \code{brm()}.
 }
@@ -105,7 +125,7 @@ whose mean is \code{sigma * gamma(1 + 1 / mu)}.
 and \code{\link[=with_outliers]{with_outliers()}}, \code{\link[=without_outliers]{without_outliers()}}, \code{\link[=p_outlier]{p_outlier()}} and
 \code{\link[=cogmod_priors]{cogmod_priors()}} all work here too. See \code{?rcogmod_lognormal} for why \code{ndt} is
 expressed directly in seconds rather than as a fraction of the fastest
-observed response, what the half Student-t outlier component is for, and why
+observed response, what the half Normal outlier component is for, and why
 the outlier component's scale is a constant rather than a \code{dpar}, and why
 reaction times have to be in seconds.
 }
@@ -126,7 +146,7 @@ response, which is exactly where the data put it.
 }
 
 The middle regime is the one to watch, because nothing warns about it. On the
-4285-trial lexical-decision data in \code{vignette("rt_models")} the shape comes
+4285-trial lexical-decision data in the \href{https://dominiquemakowski.github.io/cogmod/articles/rt_models.html}{RT models article} the shape comes
 out at 1.4, \code{ndt} lands at 0.40 s inside the dense left edge of the data, and
 the sampler's step size collapses to 0.005 against 0.19 for
 \code{\link[=cogmod_lognormal]{cogmod_lognormal()}} on the same data: mean treedepth 8.1 against 3.9, which
@@ -177,7 +197,7 @@ choose the shape rather than having the family fix it. On the data above it
 samples in a third of the time with no divergences.
 
 The slow sampling and the poor fit are the same fact, not two problems.
-Across the ten families fitted in \code{vignette("rt_models")} the Weibull comes
+Across the ten families fitted in the \href{https://dominiquemakowski.github.io/cogmod/articles/rt_models.html}{RT models article} the Weibull comes
 \strong{last} by \code{loo}, 196 elpd (SE 21) behind \code{\link[=cogmod_loggamma]{cogmod_loggamma()}} and 95 behind
 the next worst. What the sampler struggles with is the model contorting
 itself - pushing the shift up into the data, pulling the shape toward 1 - to
